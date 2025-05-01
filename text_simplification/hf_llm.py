@@ -34,7 +34,6 @@ def format_chat(row):
     # task_desc = "Determine the semantic textual similarity between the following two sentences (S1, S2). The score should be ranging from 0.0 to 5.0, and can be a decimal. Return the score only following the prefix 'Score:' without any other text or explanations."
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
     action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
-    print (QUERY_TYPE)
 
     if QUERY_TYPE == "zero-shot":
         return [
@@ -59,7 +58,9 @@ def query(pipe, inputs):
     for out in tqdm(pipe(
             inputs,
             max_new_tokens=200,
-            pad_token_id=pipe.model.config.eos_token_id,
+            # pad_token_id=pipe.model.config.eos_token_id,
+            eos_token_id=terminators,
+            pad_token_id=pipe.tokenizer.eos_token_id
 
     )):
         assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
