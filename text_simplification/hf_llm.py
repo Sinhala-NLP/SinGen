@@ -40,7 +40,7 @@ def format_chat(row):
         return [
                 {"role": "user",
                  # "content": f"Determine the semantic textual similarity between the following two sentences (S1, S2). The score should be ranging from 0.0 to 5.0, and can be a decimal. Return the score only following the prefix 'Score:' without any other text or explanations. S1: {row['sentence1']} S2: {row['sentence2']}"}]
-                "content": f"{task_desc} {action_desc} S1: {row['input']}"}]
+                "content": f"{task_desc} {action_desc} S1: {row['Complex']}"}]
 
 
 def query(pipe, inputs):
