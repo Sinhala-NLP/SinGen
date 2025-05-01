@@ -78,7 +78,7 @@ def extract_score(response):
 def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
 
-    df = full.tail(400)
+    df = full.tail(4)
 
     df.loc[:, 'chat'] = df.apply(format_chat, axis=1)
 
