@@ -34,9 +34,9 @@ def query_cohere(client, model, messages):
         response = client.chat(
             model=model,
             messages=[msg],
-            temperature=0.3,
+            temperature=0.6,
         )
-        outputs.append(response.message[0].content.strip())
+        outputs.append(response)
     return outputs
 
 
