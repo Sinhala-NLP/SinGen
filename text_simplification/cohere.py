@@ -42,6 +42,9 @@ def query_cohere(client, model, messages):
 
 
 def extract_score(response):
+    if not isinstance(response, str):
+        print("Non-string response:", response)
+        return ""
     matches = re.findall(r'Simplified text:\s*(.*)', response)
     return matches[0] if matches else ""
 
