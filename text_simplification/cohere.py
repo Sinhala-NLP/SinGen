@@ -36,8 +36,9 @@ def query_cohere(client, model, messages):
             messages=[msg],
             temperature=0.3,
         )
-        outputs.append(response.text.strip())
+        outputs.append(response.message.content.strip())
     return outputs
+
 
 
 def extract_score(response):
