@@ -18,8 +18,11 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint, torch_dtype=torch.bfloat16).to("cuda")
-
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    checkpoint,
+    device_map="auto",
+    torch_dtype=torch.bfloat16
+)
 # Print model name
 print(checkpoint)
 
