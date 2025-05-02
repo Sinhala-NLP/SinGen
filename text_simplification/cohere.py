@@ -7,15 +7,6 @@ from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
 import cohere
 
-# Set up Cohere client
-COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
-co = cohere.ClientV2(COHERE_API_KEY)
-
-model_id = "command-a-03-2025"  # or "command-a-03-2025" as per your need
-
-OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
 
 def format_chat(row):
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
@@ -58,7 +49,7 @@ def extract_score(response):
 
 def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
-    df = full.tail(4)
+    df = full.tail(400)
 
     df['chat'] = df.apply(format_chat, axis=1)
 
@@ -75,5 +66,14 @@ if __name__ == '__main__':
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
+
+    # Set up Cohere client
+    COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
+    co = cohere.ClientV2(COHERE_API_KEY)
+
+    model_id = "command-a-03-2025"  # or "command-a-03-2025" as per your need
+
+    OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id, QUERY_TYPE)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     predict()
