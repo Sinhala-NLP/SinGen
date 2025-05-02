@@ -16,7 +16,7 @@ set_seed(777)
 
 model_id = "meta-llama/Llama-3.3-70B-Instruct"
 
-OUTPUT_FOLDER = os.path.join("outputs", model_id.split('/')[-1])
+OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id.split('/')[-1])
 if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
 
 print(model_id)
