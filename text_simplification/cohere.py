@@ -34,10 +34,17 @@ def query_cohere(client, model, messages):
         response = client.chat(
             model=model,
             messages=[msg],
-            temperature=0.6,
+            temperature=0.3,
         )
-        outputs.append(response)
+
+        # content is a list of content items; extract all `text` fields and join them
+        content_items = response.message.content
+        text_parts = [c.text for c in content_items if c.type == "text"]
+        full_text = " ".join(text_parts).strip()
+
+        outputs.append(full_text)
     return outputs
+
 
 
 
