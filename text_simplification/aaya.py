@@ -12,7 +12,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, set_seed
 set_seed(777)
 
 # Model checkpoint and output folder
-checkpoint = "CohereLabs/aya-101"
+checkpoint = "bigscience/bloomz-3b"
 OUTPUT_FOLDER = os.path.join("outputs", checkpoint.split('/')[-1])
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
