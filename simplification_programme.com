@@ -1,7 +1,8 @@
 #!/bin/bash
-#SBATCH --partition=cpu-6h
+#SBATCH --partition=a5000-48h
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
+#SBATCH --gres=gpu:3
 
 conda init
 conda activate /mnt/nfs/homes/ranasint/anaconda3/envs/llm_exp
@@ -9,4 +10,4 @@ export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 
 huggingface-cli login --token
 
-python -m text_simplification.cohere --query_type='zero-shot-si'
+python -m text_simplification.hf_llm --query_type='zero-shot-si'
