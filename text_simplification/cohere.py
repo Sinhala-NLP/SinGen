@@ -366,7 +366,7 @@ def evaluate_sari_scores(df):
 
 def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
-    df = full.tail(10)
+    df = full.tail(200)
 
     df['chat'] = df.apply(format_chat, axis=1)
 
