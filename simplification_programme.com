@@ -9,4 +9,4 @@ export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 
 huggingface-cli login --token
 
-python -m text_simplification.cohere --query_type='zero-shot'
+python -m text_simplification.cohere --query_type='zero-shot-si'
