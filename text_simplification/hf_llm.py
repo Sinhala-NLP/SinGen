@@ -1,9 +1,8 @@
 import argparse
 import logging
 import os
-import os
 import re
-
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -91,6 +90,130 @@ def tokenize(text):
     return tokens
 
 
+def calculate_ngram_f1(source_tokens: List[str],
+                       target_tokens: List[str],
+                       prediction_tokens: List[str],
+                       n: int) -> Tuple[float, float, float]:
+    """
+    Calculate n-gram F1 scores for KEEP, DELETE, and ADD operations
+    """
+
+    def get_ngrams(tokens, n):
+        if len(tokens) < n:
+            return set()
+        return set([tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)])
+
+    source_ngrams = get_ngrams(source_tokens, n)
+    target_ngrams = get_ngrams(target_tokens, n)
+    pred_ngrams = get_ngrams(prediction_tokens, n)
+
+    # KEEP: n-grams that should be kept from source
+    keep_target = source_ngrams & target_ngrams
+    keep_pred = source_ngrams & pred_ngrams
+
+    # DELETE: n-grams that should be deleted from source
+    delete_target = source_ngrams - target_ngrams
+    delete_pred = source_ngrams - pred_ngrams
+
+    # ADD: n-grams that should be added (not in source)
+    add_target = target_ngrams - source_ngrams
+    add_pred = pred_ngrams - source_ngrams
+
+    def f1_score(tp, fp, fn):
+        if tp + fp == 0:
+            precision = 0.0
+        else:
+            precision = tp / (tp + fp)
+
+        if tp + fn == 0:
+            recall = 0.0
+        else:
+            recall = tp / (tp + fn)
+
+        if precision + recall == 0:
+            return 0.0
+        else:
+            return 2 * precision * recall / (precision + recall)
+
+    # Calculate F1 scores
+    keep_f1 = f1_score(len(keep_target & keep_pred),
+                       len(keep_pred - keep_target),
+                       len(keep_target - keep_pred))
+
+    delete_f1 = f1_score(len(delete_target & delete_pred),
+                         len(delete_pred - delete_target),
+                         len(delete_target - delete_pred))
+
+    add_f1 = f1_score(len(add_target & add_pred),
+                      len(add_pred - add_target),
+                      len(add_target - add_pred))
+
+    return keep_f1, delete_f1, add_f1
+
+def calculate_sari_score(source: str, target: str, prediction: str) -> float:
+    """
+    Calculate SARI score for a single example
+    """
+    source_tokens = tokenize(source)
+    target_tokens = tokenize(target)
+    pred_tokens = tokenize(prediction)
+
+    # Calculate F1 scores for unigrams, bigrams, trigrams, and 4-grams
+    f1_scores = []
+    for n in range(1, 5):
+        keep_f1, delete_f1, add_f1 = calculate_ngram_f1(source_tokens, target_tokens, pred_tokens, n)
+        f1_scores.append((keep_f1, delete_f1, add_f1))
+
+    # Average across n-gram orders
+    avg_keep = np.mean([f1[0] for f1 in f1_scores])
+    avg_delete = np.mean([f1[1] for f1 in f1_scores])
+    avg_add = np.mean([f1[2] for f1 in f1_scores])
+
+    # SARI score is the average of KEEP, DELETE, and ADD F1 scores
+    sari = (avg_keep + avg_delete + avg_add) / 3
+    return sari * 100  # Convert to percentage
+
+
+def evaluate_sari_scores(df):
+    """
+    Calculate SARI scores for the predictions dataframe
+    """
+    print("\nCalculating SARI scores...")
+
+    sari_scores = []
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing SARI"):
+        source = row['Complex']
+        target = row['Simple']
+        prediction = row['preds']
+
+        sari = calculate_sari_score(source, target, prediction)
+        sari_scores.append(sari)
+
+    df['sari_score'] = sari_scores
+
+    # Calculate overall statistics
+    mean_sari = np.mean(sari_scores)
+    std_sari = np.std(sari_scores)
+    median_sari = np.median(sari_scores)
+
+    print(f"\n" + "=" * 50)
+    print(f"SARI Score Evaluation Results:")
+    print(f"=" * 50)
+    print(f"Mean SARI Score: {mean_sari:.4f}")
+    print(f"Standard Deviation: {std_sari:.4f}")
+    print(f"Median SARI Score: {median_sari:.4f}")
+    print(f"Min SARI Score: {min(sari_scores):.4f}")
+    print(f"Max SARI Score: {max(sari_scores):.4f}")
+    print(f"=" * 50)
+
+    return {
+        'mean_sari': mean_sari,
+        'std_sari': std_sari,
+        'median_sari': median_sari,
+        'min_sari': min(sari_scores),
+        'max_sari': max(sari_scores),
+        'scores': sari_scores
+    }
 
 def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
