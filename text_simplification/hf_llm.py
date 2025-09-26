@@ -75,12 +75,24 @@ def query(pipe, inputs):
 
 
 def extract_score(response):
-    try:
-        simplified_sentence = re.findall(r'Simplified text:\s*(.*)', response)
-    except IndexError:
-        simplified_sentence = ""
+    """
+    Extract simplified text from model response
+    """
+    if not isinstance(response, str):
+        print(f"Non-string response: {response}")
+        return ""
 
-    return simplified_sentence
+    try:
+        # Look for the "Simplified text:" pattern
+        matches = re.findall(r'Simplified text:\s*(.*)', response, re.IGNORECASE | re.DOTALL)
+        if matches:
+            return matches[0].strip()
+        else:
+            # If no pattern found, return the response as is (fallback)
+            return response.strip()
+    except Exception as e:
+        print(f"Error extracting text: {e}")
+        return ""
 
 
 def tokenize(text):
@@ -163,6 +175,67 @@ def calculate_ngram_f1_multi_ref(source_tokens: List[str],
     return keep_f1, delete_f1, add_f1
 
 
+def calculate_ngram_f1_single_ref(source_tokens: List[str],
+                                  target_tokens: List[str],
+                                  prediction_tokens: List[str],
+                                  n: int) -> Tuple[float, float, float]:
+    """
+    Calculate n-gram F1 scores for KEEP, DELETE, and ADD operations with single reference
+    """
+
+    def get_ngrams(tokens, n):
+        if len(tokens) < n:
+            return set()
+        return set([tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)])
+
+    source_ngrams = get_ngrams(source_tokens, n)
+    target_ngrams = get_ngrams(target_tokens, n)
+    pred_ngrams = get_ngrams(prediction_tokens, n)
+
+    # KEEP: n-grams that should be kept from source
+    keep_target = source_ngrams & target_ngrams
+    keep_pred = source_ngrams & pred_ngrams
+
+    # DELETE: n-grams that should be deleted from source
+    delete_target = source_ngrams - target_ngrams
+    delete_pred = source_ngrams - pred_ngrams
+
+    # ADD: n-grams that should be added (not in source)
+    add_target = target_ngrams - source_ngrams
+    add_pred = pred_ngrams - source_ngrams
+
+    def f1_score(tp, fp, fn):
+        if tp + fp == 0:
+            precision = 0.0
+        else:
+            precision = tp / (tp + fp)
+
+        if tp + fn == 0:
+            recall = 0.0
+        else:
+            recall = tp / (tp + fn)
+
+        if precision + recall == 0:
+            return 0.0
+        else:
+            return 2 * precision * recall / (precision + recall)
+
+    # Calculate F1 scores
+    keep_f1 = f1_score(len(keep_target & keep_pred),
+                       len(keep_pred - keep_target),
+                       len(keep_target - keep_pred))
+
+    delete_f1 = f1_score(len(delete_target & delete_pred),
+                         len(delete_pred - delete_target),
+                         len(delete_target - delete_pred))
+
+    add_f1 = f1_score(len(add_target & add_pred),
+                      len(add_pred - add_target),
+                      len(add_target - add_pred))
+
+    return keep_f1, delete_f1, add_f1
+
+
 def calculate_sari_score_multi_ref(source: str, targets: List[str], prediction: str) -> float:
     """
     Calculate SARI score for a single example with multiple references
@@ -179,6 +252,30 @@ def calculate_sari_score_multi_ref(source: str, targets: List[str], prediction: 
     f1_scores = []
     for n in range(1, 5):
         keep_f1, delete_f1, add_f1 = calculate_ngram_f1_multi_ref(source_tokens, target_tokens_list, pred_tokens, n)
+        f1_scores.append((keep_f1, delete_f1, add_f1))
+
+    # Average across n-gram orders
+    avg_keep = np.mean([f1[0] for f1 in f1_scores])
+    avg_delete = np.mean([f1[1] for f1 in f1_scores])
+    avg_add = np.mean([f1[2] for f1 in f1_scores])
+
+    # SARI score is the average of KEEP, DELETE, and ADD F1 scores
+    sari = (avg_keep + avg_delete + avg_add) / 3
+    return sari * 100  # Convert to percentage
+
+
+def calculate_sari_score_single_ref(source: str, target: str, prediction: str) -> float:
+    """
+    Calculate SARI score for a single example with single reference
+    """
+    source_tokens = tokenize(source)
+    target_tokens = tokenize(target)
+    pred_tokens = tokenize(prediction)
+
+    # Calculate F1 scores for unigrams, bigrams, trigrams, and 4-grams
+    f1_scores = []
+    for n in range(1, 5):
+        keep_f1, delete_f1, add_f1 = calculate_ngram_f1_single_ref(source_tokens, target_tokens, pred_tokens, n)
         f1_scores.append((keep_f1, delete_f1, add_f1))
 
     # Average across n-gram orders
@@ -222,7 +319,14 @@ def evaluate_sari_scores_multi_ref(df):
 
         prediction = row['preds']
 
-        sari = calculate_sari_score_multi_ref(source, targets, prediction)
+        # Use appropriate SARI calculation based on number of targets
+        if len(targets) > 1:
+            sari = calculate_sari_score_multi_ref(source, targets, prediction)
+        elif len(targets) == 1:
+            sari = calculate_sari_score_single_ref(source, targets[0], prediction)
+        else:
+            sari = 0.0
+
         sari_scores.append(sari)
 
     df['sari_score'] = sari_scores
