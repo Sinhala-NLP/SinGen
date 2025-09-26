@@ -2,7 +2,6 @@
 #SBATCH --partition=cpu-6h
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
-#SBATCH --gres=gpu:3
 
 conda init
 conda activate /mnt/nfs/homes/ranasint/anaconda3/envs/llm_exp
