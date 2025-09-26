@@ -6,4 +6,6 @@
 source activate /mnt/nfs/homes/ranasint/anaconda3/envs/llm_exp
 export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 
+huggingface-cli login --token
+
 python -m text_simplification.hf_llm --query_type='zero-shot'
