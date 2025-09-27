@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from typing import List, Tuple
+import random
 
 import numpy as np
 import pandas as pd
@@ -10,7 +11,77 @@ from tqdm.auto import tqdm
 import cohere
 
 
+def get_few_shot_examples(full_df, test_df, num_examples=3):
+    """
+    Get random few-shot examples from the dataset excluding test instances
+    """
+    # Get indices of test instances
+    test_indices = set(test_df.index)
+
+    # Get available examples (excluding test instances)
+    available_indices = [i for i in full_df.index if i not in test_indices]
+
+    # Randomly sample few-shot examples
+    random.seed(42)  # For reproducibility
+    few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
+
+    few_shot_examples = []
+    for idx in few_shot_indices:
+        row = full_df.loc[idx]
+        example = {
+            'complex': row['Complex'],
+            'simple': row['Simple']
+        }
+        few_shot_examples.append(example)
+
+    return few_shot_examples
+
+
+def format_chat_few_shot(row, few_shot_examples):
+    """
+    Format chat with few-shot examples
+    """
+    task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
+    action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
+
+    task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න.පහත සිංහල වාක්‍යයට (S) සරල සිංහල වාක්‍යයක් ලබා දෙන්න. ඒ සඳහා මෙම පියවර තුන අනුගමනය කරන්න: (1) වාක්‍යයේ ප්‍රධාන අදහස ලබා ගන්න (2) දිගු වාක්‍ය කෙටි වාක්‍ය කිහිපයකට බෙදන්න (3) දුෂ්කර වචන සාමාන්‍යයෙන් භාවිතා වන පහසු වචන වලින් වෙනස් කරන්න සහ පද වින්‍යාසය සරල කරන්න."
+    action_desc_si = "'Simplified text:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සරල කළ වාක්‍යය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+
+    # Build few-shot examples string
+    examples_str = ""
+    for i, example in enumerate(few_shot_examples, 1):
+        examples_str += f"\nExample {i}:\n"
+        examples_str += f"S: {example['complex']}\n"
+        examples_str += f"Simplified text: {example['simple']}\n"
+
+    if QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow simplify this sentence:\nS: {row['Complex']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය සරල කරන්න:\nS: {row['Complex']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "zero-shot":
+        return {
+            "role": "user",
+            "content": f"{task_desc} {action_desc} S: {row['Complex']}"
+        }
+    elif QUERY_TYPE == "zero-shot-si":
+        return {
+            "role": "user",
+            "content": f"{task_desc_si} {action_desc_si} S: {row['Complex']}"
+        }
+
+
 def format_chat(row):
+    """
+    Original format_chat function for backward compatibility
+    """
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
     action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
 
@@ -368,7 +439,31 @@ def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
     df = full.tail(200)
 
-    df['chat'] = df.apply(format_chat, axis=1)
+    # Get the rest of the instances (excluding the tail 200)
+    rest_of_instances = full.head(len(full) - 200)
+
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting few-shot examples...")
+        print(f"Total dataset size: {len(full)}")
+        print(f"Test instances (tail 200): {len(df)}")
+        print(f"Available for few-shot examples: {len(rest_of_instances)}")
+        few_shot_examples = get_few_shot_examples(rest_of_instances, df, num_examples=3)
+        print(f"Selected {len(few_shot_examples)} few-shot examples")
+
+        # Print the examples for verification
+        print("\nFew-shot examples:")
+        for i, example in enumerate(few_shot_examples, 1):
+            print(f"Example {i}:")
+            print(f"  Complex: {example['complex'][:100]}...")
+            print(f"  Simple: {example['simple'][:100]}...")
+            print()
+
+        # Apply few-shot formatting
+        df['chat'] = df.apply(lambda row: format_chat_few_shot(row, few_shot_examples), axis=1)
+    else:
+        # Use original zero-shot formatting
+        df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating predictions...")
@@ -429,7 +524,8 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
+                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
