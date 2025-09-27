@@ -25,12 +25,28 @@ def get_few_shot_examples(full_df, test_df, num_examples=3):
     random.seed(42)  # For reproducibility
     few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
 
+    simplification_columns = ['Simplification 1', 'Simplification 2', 'Simplification 3']
+
     few_shot_examples = []
     for idx in few_shot_indices:
         row = full_df.loc[idx]
+
+        # Get available simplifications for this row
+        available_simplifications = []
+        for col in simplification_columns:
+            if col in row and pd.notna(row[col]) and str(row[col]).strip():
+                available_simplifications.append(str(row[col]))
+
+        # If no valid simplifications found, skip this example
+        if not available_simplifications:
+            continue
+
+        # Randomly select one simplification from available ones
+        selected_simple = random.choice(available_simplifications)
+
         example = {
             'complex': row['Complex'],
-            'simple': row['Simple']
+            'simple': selected_simple
         }
         few_shot_examples.append(example)
 
@@ -396,15 +412,36 @@ def evaluate_sari_scores_multi_ref(df):
 def evaluate_sari_scores(df):
     """
     Calculate SARI scores for the predictions dataframe (single reference)
+    For datasets with multiple references, we'll use the first available one
     """
     print("\nCalculating SARI scores...")
+
+    # Check for available simplification columns
+    simplification_cols = ['Simplification 1', 'Simplification 2', 'Simplification 3']
+    available_cols = [col for col in simplification_cols if col in df.columns]
+
+    if not available_cols:
+        print("Error: No simplification columns found!")
+        return None
+
+    print(f"Using first available reference column: {available_cols[0]}")
 
     sari_scores = []
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing SARI"):
         source = row['Complex']
-        target = row['Simple']
-        prediction = row['preds']
 
+        # Use the first available simplification as reference
+        target = None
+        for col in available_cols:
+            if pd.notna(row[col]) and str(row[col]).strip():
+                target = str(row[col])
+                break
+
+        if target is None:
+            sari_scores.append(0.0)
+            continue
+
+        prediction = row['preds']
         sari = calculate_sari_score(source, target, prediction)
         sari_scores.append(sari)
 
@@ -418,6 +455,7 @@ def evaluate_sari_scores(df):
     print(f"\n" + "=" * 50)
     print(f"SARI Score Evaluation Results:")
     print(f"=" * 50)
+    print(f"Reference column used: {available_cols[0]}")
     print(f"Mean SARI Score: {mean_sari:.4f}")
     print(f"Standard Deviation: {std_sari:.4f}")
     print(f"Median SARI Score: {median_sari:.4f}")
@@ -431,7 +469,8 @@ def evaluate_sari_scores(df):
         'median_sari': median_sari,
         'min_sari': min(sari_scores),
         'max_sari': max(sari_scores),
-        'scores': sari_scores
+        'scores': sari_scores,
+        'reference_column': available_cols[0]
     }
 
 
@@ -479,19 +518,11 @@ def predict():
     df.to_csv(predictions_file, header=True, index=False, encoding='utf-8')
     print(f"Predictions saved to: {predictions_file}")
 
-    # Check if we have multiple references and use appropriate evaluation
-    has_multiple_refs = any(col in df.columns for col in ['Simplification 1', 'Simplification 2', 'Simplification 3'])
-
-    if has_multiple_refs:
-        print("Multiple reference columns detected. Using multi-reference SARI evaluation.")
-        sari_results = evaluate_sari_scores_multi_ref(df)
-        results_filename = "predictions_with_sari_multi_ref.csv"
-        summary_filename = "sari_summary_multi_ref.txt"
-    else:
-        print("Single reference detected. Using single-reference SARI evaluation.")
-        sari_results = evaluate_sari_scores(df)
-        results_filename = "predictions_with_sari.csv"
-        summary_filename = "sari_summary.txt"
+    # Always use multi-reference SARI evaluation since we have multiple gold labels
+    print("Using multi-reference SARI evaluation with all available simplification columns.")
+    sari_results = evaluate_sari_scores_multi_ref(df)
+    results_filename = "predictions_with_sari_multi_ref.csv"
+    summary_filename = "sari_summary_multi_ref.txt"
 
     # Save results with SARI scores
     results_file = os.path.join(OUTPUT_FOLDER, results_filename)
@@ -501,12 +532,8 @@ def predict():
     # Save summary statistics
     summary_file = os.path.join(OUTPUT_FOLDER, summary_filename)
     with open(summary_file, 'w', encoding='utf-8') as f:
-        if has_multiple_refs:
-            f.write(f"SARI Score Evaluation Results (Multiple References)\n")
-            f.write(f"Reference columns: {', '.join(sari_results.get('reference_columns', []))}\n")
-        else:
-            f.write(f"SARI Score Evaluation Results\n")
-
+        f.write(f"SARI Score Evaluation Results (Multiple References)\n")
+        f.write(f"Reference columns: {', '.join(sari_results.get('reference_columns', []))}\n")
         f.write(f"Model: {model_id}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
