@@ -9,4 +9,4 @@ conda activate /mnt/nfs/homes/ranasint/anaconda3/envs/llm_exp
 export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 
 
-python -m text_simplification.cohere --query_type='few-shot'
+python -m text_simplification.cohere --query_type='few-shot-si'
