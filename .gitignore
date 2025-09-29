@@ -73,6 +73,7 @@ fabric.properties
 .ipynb_checkpoints/.idea
 .ipynb_checkpoints
 
+outputs
 runs
 temp
 temp*
@@ -85,3 +86,5 @@ cache
 
 site
 
+slurm*
+*.sh
