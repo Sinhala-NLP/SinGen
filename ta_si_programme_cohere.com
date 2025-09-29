@@ -9,4 +9,4 @@ conda activate /mnt/nfs/homes/ranasint/anaconda3/envs/llm_exp
 export HF_HOME=/mnt/nfs/homes/ranasint/hf_home
 
 
-python -m text_summerisation.cohere --query_type='zero-shot'
+python -m machine_translation.ta_si.cohere --query_type='zero-shot'
