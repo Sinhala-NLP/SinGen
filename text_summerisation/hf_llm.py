@@ -1,8 +1,8 @@
 import argparse
-import logging
 import os
 import re
 from typing import List, Tuple
+import random
 
 import numpy as np
 import pandas as pd
@@ -27,31 +27,84 @@ pipe_lm = pipeline(
 )
 
 
-def format_chat(row):
-    # task_desc = "Determine the semantic textual similarity between the following two sentences (S1, S2). The score should be ranging from 0.0 to 5.0, and can be a decimal. Return the score only following the prefix 'Score:' without any other text or explanations."
+def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance
+    Each test instance will get different randomly selected examples
+    """
+    test_indices = set(test_df.index)
+    available_indices = [i for i in full_df.index if i not in test_indices]
+
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
+    simplification_columns = ['Simplification 1', 'Simplification 2', 'Simplification 3']
+    few_shot_examples = []
+
+    # Shuffle available indices for this specific instance
+    shuffled_indices = available_indices.copy()
+    random.shuffle(shuffled_indices)
+
+    for idx in shuffled_indices:
+        if len(few_shot_examples) >= num_examples:
+            break
+
+        row = full_df.loc[idx]
+        available_simplifications = []
+
+        for col in simplification_columns:
+            if col in row and pd.notna(row[col]) and str(row[col]).strip():
+                available_simplifications.append(str(row[col]))
+
+        if available_simplifications:
+            selected_simple = random.choice(available_simplifications)
+            few_shot_examples.append({
+                'complex': row['Complex'],
+                'simple': selected_simple
+            })
+
+    return few_shot_examples
+
+
+def format_chat(row, few_shot_examples=None):
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
     action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
 
     task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න.පහත සිංහල වාක්‍යයට (S) සරල සිංහල වාක්‍යයක් ලබා දෙන්න. ඒ සඳහා මෙම පියවර තුන අනුගමනය කරන්න: (1) වාක්‍යයේ ප්‍රධාන අදහස ලබා ගන්න (2) දිගු වාක්‍ය කෙටි වාක්‍ය කිහිපයකට බෙදන්න (3) දුෂ්කර වචන සාමාන්‍යයෙන් භාවිතා වන පහසු වචන වලින් වෙනස් කරන්න සහ පද වින්‍යාසය සරල කරන්න."
     action_desc_si = "'Simplified text:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සරල කළ වාක්‍යය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
-    if QUERY_TYPE == "zero-shot":
-        return [
-            {"role": "user",
-             # "content": f"Determine the semantic textual similarity between the following two sentences (S1, S2). The score should be ranging from 0.0 to 5.0, and can be a decimal. Return the score only following the prefix 'Score:' without any other text or explanations. S1: {row['sentence1']} S2: {row['sentence2']}"}]
-             "content": f"{task_desc} {action_desc} S: {row['Complex']}"}]
+    # Build few-shot examples string if provided
+    examples_str = ""
+    if few_shot_examples:
+        for i, example in enumerate(few_shot_examples, 1):
+            examples_str += f"\nExample {i}:\n"
+            examples_str += f"S: {example['complex']}\n"
+            examples_str += f"Simplified text: {example['simple']}\n"
 
-    if QUERY_TYPE == "zero-shot-si":
-        return [
-            {"role": "user",
-             # "content": f"Determine the semantic textual similarity between the following two sentences (S1, S2). The score should be ranging from 0.0 to 5.0, and can be a decimal. Return the score only following the prefix 'Score:' without any other text or explanations. S1: {row['sentence1']} S2: {row['sentence2']}"}]
-             "content": f"{task_desc_si} {action_desc_si} S: {row['Complex']}"}]
+    if QUERY_TYPE == "zero-shot":
+        return [{"role": "user", "content": f"{task_desc} {action_desc} S: {row['Complex']}"}]
+
+    elif QUERY_TYPE == "zero-shot-si":
+        return [{"role": "user", "content": f"{task_desc_si} {action_desc_si} S: {row['Complex']}"}]
+
+    elif QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow simplify this sentence:\nS: {row['Complex']}"
+        return [{"role": "user", "content": prompt}]
+
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය සරල කරන්න:\nS: {row['Complex']}"
+        return [{"role": "user", "content": prompt}]
+
+    else:
+        # Default fallback
+        return [{"role": "user", "content": f"{task_desc} {action_desc} S: {row['Complex']}"}]
 
 
 def query(pipe, inputs):
     """
     :param pipe: text-generation pipeline
-    :param model_folder_path: list of messages
+    :param inputs: list of messages
     :return: list
     """
     assistant_outputs = []
@@ -64,10 +117,8 @@ def query(pipe, inputs):
     for out in tqdm(pipe(
             inputs,
             max_new_tokens=200,
-            # pad_token_id=pipe.model.config.eos_token_id,
             eos_token_id=terminators,
             pad_token_id=pipe.tokenizer.eos_token_id
-
     )):
         assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
 
@@ -84,12 +135,18 @@ def extract_score(response):
 
     try:
         # Look for the "Simplified text:" pattern
-        matches = re.findall(r'Simplified text:\s*(.*)', response, re.IGNORECASE | re.DOTALL)
+        matches = re.findall(r'Simplified text:\s*(.*?)(?:\n\n|\Z)', response, re.IGNORECASE | re.DOTALL)
         if matches:
             return matches[0].strip()
-        else:
-            # If no pattern found, return the response as is (fallback)
-            return response.strip()
+
+        # Fallback: try without strict matching
+        if "simplified text:" in response.lower():
+            parts = response.lower().split("simplified text:")
+            if len(parts) > 1:
+                return parts[1].strip()
+
+        # Last resort: return the response as is
+        return response.strip()
     except Exception as e:
         print(f"Error extracting text: {e}")
         return ""
@@ -99,7 +156,6 @@ def tokenize(text):
     """Simple tokenization by splitting on whitespace and punctuation"""
     if pd.isna(text) or text is None:
         return []
-    # Simple tokenization - you might want to use a proper Sinhala tokenizer
     text = str(text).lower()
     tokens = re.findall(r'\b\w+\b', text)
     return tokens
@@ -127,7 +183,7 @@ def calculate_ngram_f1_multi_ref(source_tokens: List[str],
         target_ngrams = get_ngrams(target_tokens, n)
         all_target_ngrams.update(target_ngrams)
 
-    # KEEP: n-grams that should be kept from source (present in source AND in at least one target)
+    # KEEP: n-grams that should be kept from source
     keep_target = set()
     for target_tokens in target_tokens_list:
         target_ngrams = get_ngrams(target_tokens, n)
@@ -135,11 +191,11 @@ def calculate_ngram_f1_multi_ref(source_tokens: List[str],
 
     keep_pred = source_ngrams & pred_ngrams
 
-    # DELETE: n-grams that should be deleted from source (present in source but NOT in any target)
+    # DELETE: n-grams that should be deleted from source
     delete_target = source_ngrams - all_target_ngrams
     delete_pred = source_ngrams - pred_ngrams
 
-    # ADD: n-grams that should be added (not in source but present in at least one target)
+    # ADD: n-grams that should be added
     add_target = all_target_ngrams - source_ngrams
     add_pred = pred_ngrams - source_ngrams
 
@@ -159,7 +215,6 @@ def calculate_ngram_f1_multi_ref(source_tokens: List[str],
         else:
             return 2 * precision * recall / (precision + recall)
 
-    # Calculate F1 scores
     keep_f1 = f1_score(len(keep_target & keep_pred),
                        len(keep_pred - keep_target),
                        len(keep_target - keep_pred))
@@ -192,15 +247,12 @@ def calculate_ngram_f1_single_ref(source_tokens: List[str],
     target_ngrams = get_ngrams(target_tokens, n)
     pred_ngrams = get_ngrams(prediction_tokens, n)
 
-    # KEEP: n-grams that should be kept from source
     keep_target = source_ngrams & target_ngrams
     keep_pred = source_ngrams & pred_ngrams
 
-    # DELETE: n-grams that should be deleted from source
     delete_target = source_ngrams - target_ngrams
     delete_pred = source_ngrams - pred_ngrams
 
-    # ADD: n-grams that should be added (not in source)
     add_target = target_ngrams - source_ngrams
     add_pred = pred_ngrams - source_ngrams
 
@@ -220,7 +272,6 @@ def calculate_ngram_f1_single_ref(source_tokens: List[str],
         else:
             return 2 * precision * recall / (precision + recall)
 
-    # Calculate F1 scores
     keep_f1 = f1_score(len(keep_target & keep_pred),
                        len(keep_pred - keep_target),
                        len(keep_target - keep_pred))
@@ -244,24 +295,20 @@ def calculate_sari_score_multi_ref(source: str, targets: List[str], prediction: 
     target_tokens_list = [tokenize(target) for target in targets if pd.notna(target) and target.strip()]
     pred_tokens = tokenize(prediction)
 
-    # If no valid targets, return 0
     if not target_tokens_list:
         return 0.0
 
-    # Calculate F1 scores for unigrams, bigrams, trigrams, and 4-grams
     f1_scores = []
     for n in range(1, 5):
         keep_f1, delete_f1, add_f1 = calculate_ngram_f1_multi_ref(source_tokens, target_tokens_list, pred_tokens, n)
         f1_scores.append((keep_f1, delete_f1, add_f1))
 
-    # Average across n-gram orders
     avg_keep = np.mean([f1[0] for f1 in f1_scores])
     avg_delete = np.mean([f1[1] for f1 in f1_scores])
     avg_add = np.mean([f1[2] for f1 in f1_scores])
 
-    # SARI score is the average of KEEP, DELETE, and ADD F1 scores
     sari = (avg_keep + avg_delete + avg_add) / 3
-    return sari * 100  # Convert to percentage
+    return sari * 100
 
 
 def calculate_sari_score_single_ref(source: str, target: str, prediction: str) -> float:
@@ -272,20 +319,17 @@ def calculate_sari_score_single_ref(source: str, target: str, prediction: str) -
     target_tokens = tokenize(target)
     pred_tokens = tokenize(prediction)
 
-    # Calculate F1 scores for unigrams, bigrams, trigrams, and 4-grams
     f1_scores = []
     for n in range(1, 5):
         keep_f1, delete_f1, add_f1 = calculate_ngram_f1_single_ref(source_tokens, target_tokens, pred_tokens, n)
         f1_scores.append((keep_f1, delete_f1, add_f1))
 
-    # Average across n-gram orders
     avg_keep = np.mean([f1[0] for f1 in f1_scores])
     avg_delete = np.mean([f1[1] for f1 in f1_scores])
     avg_add = np.mean([f1[2] for f1 in f1_scores])
 
-    # SARI score is the average of KEEP, DELETE, and ADD F1 scores
     sari = (avg_keep + avg_delete + avg_add) / 3
-    return sari * 100  # Convert to percentage
+    return sari * 100
 
 
 def evaluate_sari_scores_multi_ref(df):
@@ -294,16 +338,14 @@ def evaluate_sari_scores_multi_ref(df):
     """
     print("\nCalculating SARI scores with multiple references...")
 
-    # Check which simplification columns exist
     simplification_cols = []
     for col in ['Simplification 1', 'Simplification 2', 'Simplification 3']:
         if col in df.columns:
             simplification_cols.append(col)
 
     if not simplification_cols:
-        # Fallback to original single reference if no Simplification columns found
-        print("No 'Simplification X' columns found. Using 'Simple' column as single reference.")
-        simplification_cols = ['Simple']
+        print("No 'Simplification X' columns found.")
+        return None
 
     print(f"Using columns: {simplification_cols}")
 
@@ -311,7 +353,6 @@ def evaluate_sari_scores_multi_ref(df):
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing SARI with multiple refs"):
         source = row['Complex']
 
-        # Get all available simplifications for this row
         targets = []
         for col in simplification_cols:
             if col in row and pd.notna(row[col]) and str(row[col]).strip():
@@ -319,7 +360,6 @@ def evaluate_sari_scores_multi_ref(df):
 
         prediction = row['preds']
 
-        # Use appropriate SARI calculation based on number of targets
         if len(targets) > 1:
             sari = calculate_sari_score_multi_ref(source, targets, prediction)
         elif len(targets) == 1:
@@ -331,7 +371,6 @@ def evaluate_sari_scores_multi_ref(df):
 
     df['sari_score'] = sari_scores
 
-    # Calculate overall statistics
     mean_sari = np.mean(sari_scores)
     std_sari = np.std(sari_scores)
     median_sari = np.median(sari_scores)
@@ -360,17 +399,46 @@ def evaluate_sari_scores_multi_ref(df):
 
 def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
+    df = full.tail(200).copy()
 
-    df = full.tail(200)
+    # Get the rest of the instances (excluding the tail 200)
+    rest_of_instances = full.head(len(full) - 200)
 
-    df.loc[:, 'chat'] = df.apply(format_chat, axis=1)
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting dynamic few-shot examples for each test instance...")
+        print(f"Total dataset size: {len(full)}")
+        print(f"Test instances (tail 200): {len(df)}")
+        print(f"Available for few-shot examples: {len(rest_of_instances)}")
 
-    # generate responses
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                rest_of_instances,
+                df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=42  # Base seed for reproducibility
+            )
+
+            # Format the chat with these examples
+            chat_message = format_chat(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples")
+    else:
+        # Use zero-shot formatting
+        df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
+
+    # Generate responses
     print("Generating predictions...")
     responses = query(pipe_lm, df['chat'].tolist())
     df['responses'] = responses
 
-    # extract predictions
+    # Extract predictions
     print("Extracting simplified text...")
     df['preds'] = df.apply(lambda row: extract_score(row['responses']), axis=1)
 
@@ -381,6 +449,10 @@ def predict():
 
     # Calculate SARI scores with multiple references
     sari_results = evaluate_sari_scores_multi_ref(df)
+
+    if sari_results is None:
+        print("Error: Could not evaluate SARI scores.")
+        return df['preds'].tolist(), None
 
     # Save results with SARI scores
     results_file = os.path.join(OUTPUT_FOLDER, "predictions_with_sari_multi_ref.csv")
@@ -394,6 +466,7 @@ def predict():
         f.write(f"Model: {model_id}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"Reference columns: {', '.join(sari_results['reference_columns'])}\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"Mean SARI Score: {sari_results['mean_sari']:.4f}\n")

@@ -3,12 +3,13 @@ import os
 import re
 from typing import List, Tuple
 import random
+import time
 
 import numpy as np
 import pandas as pd
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
-import cohere
+from openai import OpenAI
 
 
 def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
@@ -60,26 +61,14 @@ def format_chat_few_shot(row, few_shot_examples):
 
     if QUERY_TYPE == "few-shot":
         prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow summarize this text:\nText: {row['text']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
+        return prompt
     elif QUERY_TYPE == "few-shot-si":
         prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පාඨය සාරාංශ කරන්න:\nText: {row['text']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
+        return prompt
     elif QUERY_TYPE == "zero-shot":
-        return {
-            "role": "user",
-            "content": f"{task_desc} {action_desc} Text: {row['text']}"
-        }
+        return f"{task_desc} {action_desc} Text: {row['text']}"
     elif QUERY_TYPE == "zero-shot-si":
-        return {
-            "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} Text: {row['text']}"
-        }
+        return f"{task_desc_si} {action_desc_si} Text: {row['text']}"
 
 
 def format_chat(row):
@@ -93,45 +82,65 @@ def format_chat(row):
     action_desc_si = "'Summary:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සාරාංශය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
     if QUERY_TYPE == "zero-shot":
-        return {
-            "role": "user",
-            "content": f"{task_desc} {action_desc} Text: {row['text']}"
-        }
+        return f"{task_desc} {action_desc} Text: {row['text']}"
     elif QUERY_TYPE == "zero-shot-si":
-        return {
-            "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} Text: {row['text']}"
-        }
+        return f"{task_desc_si} {action_desc_si} Text: {row['text']}"
 
 
-def query_cohere(client, model, messages):
+def query_openai(client, model, messages, max_retries=3):
+    """
+    Query OpenAI API with retry logic
+    """
     outputs = []
-    for msg in tqdm(messages, desc="Generating summaries"):
-        try:
-            response = client.chat(
-                model=model,
-                messages=[msg],
-                temperature=0.3,
-            )
+    for prompt in tqdm(messages, desc="Generating summaries"):
+        for attempt in range(max_retries):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": "You are an expert in Sinhala language summarization."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=500
+                )
 
-            # content is a list of content items; extract all `text` fields and join them
-            content_items = response.message.content
-            text_parts = [c.text for c in content_items if c.type == "text"]
-            full_text = " ".join(text_parts).strip()
+                # Extract the response text
+                full_text = response.choices[0].message.content.strip()
+                outputs.append(full_text)
+                break
 
-            outputs.append(full_text)
-        except Exception as e:
-            print(f"Error with message: {e}")
-            outputs.append("")
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"Error (attempt {attempt + 1}/{max_retries}): {e}. Retrying...")
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    print(f"Failed after {max_retries} attempts: {e}")
+                    outputs.append("")
     return outputs
 
 
 def extract_summary(response):
+    """
+    Extract summary from response
+    """
     if not isinstance(response, str):
         print("Non-string response:", response)
         return ""
-    matches = re.findall(r'Summary:\s*(.*)', response, re.DOTALL)
-    return matches[0].strip() if matches else response.strip()
+
+    # Use DOTALL flag to capture across newlines
+    matches = re.findall(r'Summary:\s*(.*?)(?:\n\n|\Z)', response, re.DOTALL | re.IGNORECASE)
+    if matches:
+        return matches[0].strip()
+
+    # Fallback: try without strict matching
+    if "summary:" in response.lower():
+        parts = response.lower().split("summary:")
+        if len(parts) > 1:
+            return parts[1].strip()
+
+    # Last resort: return the whole response
+    return response.strip()
 
 
 # ROUGE Evaluation Functions
@@ -340,7 +349,7 @@ def predict():
 
     # Generate responses
     print("Generating summaries...")
-    responses = query_cohere(co, model_id, df['chat'].tolist())
+    responses = query_openai(client, model_id, df['chat'].tolist())
     df['responses'] = responses
 
     # Extract summaries
@@ -396,18 +405,21 @@ def predict():
 
 
 if __name__ == '__main__':
+    model_id = "gpt-4o"
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
 
-    # Set up Cohere client
-    COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
-    co = cohere.ClientV2(COHERE_API_KEY)
+    # Set up OpenAI client
+    OPENAI_API_KEY = "<<your-api-key>>"
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
-    model_id = "command-a-03-2025"  # or your preferred model
+    print(f"Using model: {model_id}")
 
     OUTPUT_FOLDER = os.path.join("outputs", "text_summarisation", model_id, QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)

@@ -2,90 +2,35 @@ import argparse
 import os
 import re
 from typing import List, Tuple
-import random
 
 import numpy as np
 import pandas as pd
+import torch
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
-import cohere
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, set_seed
 
+# Set seed for reproducibility
+set_seed(777)
 
-def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
-    """
-    Get random few-shot examples for a specific test instance
-    Each test instance will get different randomly selected examples
-    """
-    # Use instance-specific seed for randomization
-    if seed is not None:
-        random.seed(seed + instance_idx)
+# Model checkpoint
+checkpoint = "bigscience/mt0-xxl"
 
-    # Randomly sample few-shot examples for this specific instance
-    few_shot_indices = random.sample(range(len(train_df)), min(num_examples, len(train_df)))
+# Load tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    checkpoint,
+    device_map="auto",
+    torch_dtype=torch.bfloat16
+)
+# Print model name
+print(checkpoint)
 
-    few_shot_examples = []
-    for idx in few_shot_indices:
-        row = train_df.iloc[idx]
-
-        # Skip if text or summary is missing
-        if pd.notna(row['text']) and pd.notna(row['summary']) and \
-                str(row['text']).strip() and str(row['summary']).strip():
-            example = {
-                'text': str(row['text']),
-                'summary': str(row['summary'])
-            }
-            few_shot_examples.append(example)
-
-    return few_shot_examples
-
-
-def format_chat_few_shot(row, few_shot_examples):
-    """
-    Format chat with few-shot examples for summarization
-    """
-    task_desc = "Imagine you are an expert in Sinhala language. Please provide a concise summary of the following Sinhala text. The summary should capture the main ideas and key points while being significantly shorter than the original text."
-    action_desc = "Return the summary only following the prefix 'Summary:' without any other text or explanations."
-
-    task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත සිංහල පාඨයේ සංක්ෂිප්ත සාරාංශයක් ලබා දෙන්න. සාරාංශය මුල් පාඨයට වඩා බෙහෙවින් කෙටි වන අතර ප්‍රධාන අදහස් සහ ප්‍රධාන කරුණු ගත යුතුය."
-    action_desc_si = "'Summary:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සාරාංශය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
-
-    # Build few-shot examples string
-    examples_str = ""
-    for i, example in enumerate(few_shot_examples, 1):
-        # Truncate text if too long for context
-        text_preview = example['text'][:500] + "..." if len(example['text']) > 500 else example['text']
-        examples_str += f"\nExample {i}:\n"
-        examples_str += f"Text: {text_preview}\n"
-        examples_str += f"Summary: {example['summary']}\n"
-
-    if QUERY_TYPE == "few-shot":
-        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow summarize this text:\nText: {row['text']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
-    elif QUERY_TYPE == "few-shot-si":
-        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පාඨය සාරාංශ කරන්න:\nText: {row['text']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
-    elif QUERY_TYPE == "zero-shot":
-        return {
-            "role": "user",
-            "content": f"{task_desc} {action_desc} Text: {row['text']}"
-        }
-    elif QUERY_TYPE == "zero-shot-si":
-        return {
-            "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} Text: {row['text']}"
-        }
+# Query type is set later through argparse
+QUERY_TYPE = "zero-shot"  # default
 
 
 def format_chat(row):
-    """
-    Original format_chat function for zero-shot summarization
-    """
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a concise summary of the following Sinhala news article. The summary should capture the main ideas and key points while being significantly shorter than the original text."
     action_desc = "Return the summary only following the prefix 'Summary:' without any other text or explanations."
 
@@ -104,25 +49,20 @@ def format_chat(row):
         }
 
 
-def query_cohere(client, model, messages):
+def query(model, tokenizer, inputs):
     outputs = []
-    for msg in tqdm(messages, desc="Generating summaries"):
+
+    for inp in tqdm(inputs, desc="Generating summaries"):
         try:
-            response = client.chat(
-                model=model,
-                messages=[msg],
-                temperature=0.3,
-            )
-
-            # content is a list of content items; extract all `text` fields and join them
-            content_items = response.message.content
-            text_parts = [c.text for c in content_items if c.type == "text"]
-            full_text = " ".join(text_parts).strip()
-
-            outputs.append(full_text)
+            input_text = inp['content']
+            encoded = tokenizer.encode(input_text, return_tensors="pt").to("cuda")
+            generated_ids = model.generate(encoded, max_new_tokens=200)
+            decoded = tokenizer.decode(generated_ids[0], skip_special_tokens=True)
+            outputs.append(decoded.strip())
         except Exception as e:
-            print(f"Error with message: {e}")
+            print(f"Error with input: {e}")
             outputs.append("")
+
     return outputs
 
 
@@ -302,45 +242,19 @@ def predict():
     print("Loading XL-Sum Sinhala dataset...")
     ds = load_dataset("csebuetnlp/xlsum", "sinhala", trust_remote_code=True)
 
-    train_df = ds["train"].to_pandas()
     test_df = ds["test"].to_pandas()
 
-    print(f"Train size: {len(train_df)}")
     print(f"Test size: {len(test_df)}")
 
     # Use entire test set
     df = test_df.copy()
     print(f"Using {len(df)} test samples")
 
-    # Get few-shot examples if using few-shot learning
-    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
-        print("Getting dynamic few-shot examples for each test instance...")
-        print(f"Available training examples: {len(train_df)}")
-
-        # Apply few-shot formatting with dynamic example selection per instance
-        chat_messages = []
-        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
-            # Get unique few-shot examples for this specific test instance
-            few_shot_examples = get_few_shot_examples_for_instance(
-                train_df,
-                instance_idx=idx,
-                num_examples=3,
-                seed=42  # Base seed for reproducibility
-            )
-
-            # Format the chat with these examples
-            chat_message = format_chat_few_shot(row, few_shot_examples)
-            chat_messages.append(chat_message)
-
-        df['chat'] = chat_messages
-        print(f"Each test instance has been assigned unique few-shot examples")
-    else:
-        # Use original zero-shot formatting
-        df['chat'] = df.apply(format_chat, axis=1)
+    df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating summaries...")
-    responses = query_cohere(co, model_id, df['chat'].tolist())
+    responses = query(model, tokenizer, df['chat'].tolist())
     df['responses'] = responses
 
     # Extract summaries
@@ -365,11 +279,9 @@ def predict():
     summary_file = os.path.join(OUTPUT_FOLDER, "rouge_summary.txt")
     with open(summary_file, 'w', encoding='utf-8') as f:
         f.write(f"ROUGE Score Evaluation Results\n")
-        f.write(f"Model: {model_id}\n")
+        f.write(f"Model: {checkpoint}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
-        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
-            f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"ROUGE-1:\n")
         f.write(f"  Mean: {rouge_results['rouge1']['mean']:.4f}\n")
@@ -397,19 +309,13 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
-                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
 
-    # Set up Cohere client
-    COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
-    co = cohere.ClientV2(COHERE_API_KEY)
-
-    model_id = "command-a-03-2025"  # or your preferred model
-
-    OUTPUT_FOLDER = os.path.join("outputs", "text_summarisation", model_id, QUERY_TYPE)
+    # Create output folder with query type
+    OUTPUT_FOLDER = os.path.join("outputs", "text_summarisation", checkpoint.split('/')[-1], QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     predictions, rouge_results = predict()
