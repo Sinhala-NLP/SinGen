@@ -6,8 +6,24 @@ import random
 
 import numpy as np
 import pandas as pd
+import torch
 from tqdm.auto import tqdm
-import cohere
+from transformers import pipeline, set_seed
+
+set_seed(777)
+
+model_id = "meta-llama/Llama-3.3-70B-Instruct"
+
+print(model_id)
+
+pipe_lm = pipeline(
+    "text-generation",
+    model=model_id,
+    model_kwargs={"torch_dtype": torch.bfloat16},
+    device_map="auto",
+    do_sample=False,
+    top_p=1.0,
+)
 
 
 def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
@@ -44,98 +60,87 @@ def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examp
     return few_shot_examples
 
 
-def format_chat_few_shot(row, few_shot_examples):
-    """
-    Format chat with few-shot examples for translation
-    """
+def format_chat(row, few_shot_examples=None):
     task_desc = "You are an expert translator specializing in Tamil to Sinhala translation. Translate the following Tamil sentence (T) into Sinhala accurately while preserving the meaning and context."
     action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
 
     task_desc_si = "ඔබ දෙමළ සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු වන්න. පහත දෙමළ වාක්‍යය (T) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
     action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
-    # Build few-shot examples string
+    # Build few-shot examples string if provided
     examples_str = ""
-    for i, example in enumerate(few_shot_examples, 1):
-        examples_str += f"\nExample {i}:\n"
-        examples_str += f"T: {example['tamil']}\n"
-        examples_str += f"Translation: {example['sinhala']}\n"
-
-    if QUERY_TYPE == "few-shot":
-        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow translate this sentence:\nT: {row['Tamil']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
-    elif QUERY_TYPE == "few-shot-si":
-        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය පරිවර්තනය කරන්න:\nT: {row['Tamil']}"
-        return {
-            "role": "user",
-            "content": prompt
-        }
-    elif QUERY_TYPE == "zero-shot":
-        return {
-            "role": "user",
-            "content": f"{task_desc} {action_desc} T: {row['Tamil']}"
-        }
-    elif QUERY_TYPE == "zero-shot-si":
-        return {
-            "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} T: {row['Tamil']}"
-        }
-
-
-def format_chat(row):
-    """
-    Original format_chat function for zero-shot translation
-    """
-    task_desc = "You are an expert translator specialising in Tamil to Sinhala translation. Translate the following Tamil sentence (T) into Sinhala accurately while preserving the meaning and context."
-    action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
-
-    task_desc_si = "ඔබ දෙමළ සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු වන්න. පහත දෙමළ වාක්‍යය (T) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
-    action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+    if few_shot_examples:
+        for i, example in enumerate(few_shot_examples, 1):
+            examples_str += f"\nExample {i}:\n"
+            examples_str += f"T: {example['tamil']}\n"
+            examples_str += f"Translation: {example['sinhala']}\n"
 
     if QUERY_TYPE == "zero-shot":
-        return {
-            "role": "user",
-            "content": f"{task_desc} {action_desc} T: {row['Tamil']}"
-        }
+        return [{"role": "user", "content": f"{task_desc} {action_desc} T: {row['Tamil']}"}]
+
     elif QUERY_TYPE == "zero-shot-si":
-        return {
-            "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} T: {row['Tamil']}"
-        }
+        return [{"role": "user", "content": f"{task_desc_si} {action_desc_si} T: {row['Tamil']}"}]
+
+    elif QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow translate this sentence:\nT: {row['Tamil']}"
+        return [{"role": "user", "content": prompt}]
+
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය පරිවර්තනය කරන්න:\nT: {row['Tamil']}"
+        return [{"role": "user", "content": prompt}]
+
+    else:
+        # Default fallback
+        return [{"role": "user", "content": f"{task_desc} {action_desc} T: {row['Tamil']}"}]
 
 
-def query_cohere(client, model, messages):
-    outputs = []
-    for msg in tqdm(messages, desc="Generating translations"):
-        try:
-            response = client.chat(
-                model=model,
-                messages=[msg],
-                temperature=0.3,
-            )
+def query(pipe, inputs):
+    """
+    :param pipe: text-generation pipeline
+    :param inputs: list of messages
+    :return: list
+    """
+    assistant_outputs = []
 
-            # content is a list of content items; extract all `text` fields and join them
-            content_items = response.message.content
-            text_parts = [c.text for c in content_items if c.type == "text"]
-            full_text = " ".join(text_parts).strip()
+    terminators = [
+        pipe.tokenizer.eos_token_id,
+        pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    ]
 
-            outputs.append(full_text)
-        except Exception as e:
-            print(f"Error with message: {e}")
-            outputs.append("")
-    return outputs
+    for out in tqdm(pipe(
+            inputs,
+            max_new_tokens=200,
+            eos_token_id=terminators,
+            pad_token_id=pipe.tokenizer.eos_token_id
+    )):
+        assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
+
+    return assistant_outputs
 
 
 def extract_translation(response):
     """Extract translation from model response"""
     if not isinstance(response, str):
-        print("Non-string response:", response)
+        print(f"Non-string response: {response}")
         return ""
-    matches = re.findall(r'Translation:\s*(.*)', response)
-    return matches[0] if matches else response.strip()
+
+    try:
+        # Look for the "Translation:" pattern
+        matches = re.findall(r'Translation:\s*(.*?)(?:\n\n|\Z)', response, re.IGNORECASE | re.DOTALL)
+        if matches:
+            return matches[0].strip()
+
+        # Fallback: try without strict matching
+        if "translation:" in response.lower():
+            parts = response.lower().split("translation:")
+            if len(parts) > 1:
+                return parts[1].strip()
+
+        # Last resort: return the response as is
+        return response.strip()
+    except Exception as e:
+        print(f"Error extracting translation: {e}")
+        return ""
 
 
 # BLEU Score Evaluation Functions
@@ -352,23 +357,23 @@ def predict(tsv_file_path):
             )
 
             # Format the chat with these examples
-            chat_message = format_chat_few_shot(row, few_shot_examples)
+            chat_message = format_chat(row, few_shot_examples)
             chat_messages.append(chat_message)
 
         df['chat'] = chat_messages
         print(f"Each test instance has been assigned unique few-shot examples")
     else:
         # Use zero-shot formatting
-        df['chat'] = df.apply(format_chat, axis=1)
+        df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
 
     # Generate responses
     print("Generating translations...")
-    responses = query_cohere(co, model_id, df['chat'].tolist())
+    responses = query(pipe_lm, df['chat'].tolist())
     df['responses'] = responses
 
     # Extract predictions
     print("Extracting translations...")
-    df['preds'] = df['responses'].apply(extract_translation)
+    df['preds'] = df.apply(lambda row: extract_translation(row['responses']), axis=1)
 
     # Save predictions
     predictions_file = os.path.join(OUTPUT_FOLDER, "predictions.csv")
@@ -421,13 +426,9 @@ if __name__ == '__main__':
     print(f"Query type: {QUERY_TYPE}")
     print(f"TSV file: {TSV_FILE}")
 
-    # Set up Cohere client
-    COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
-    co = cohere.ClientV2(COHERE_API_KEY)
-
-    model_id = "command-a-03-2025"
-
-    OUTPUT_FOLDER = os.path.join("outputs", "tamil_sinhala_translation", model_id, QUERY_TYPE)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    # Create output folder with query type
+    OUTPUT_FOLDER = os.path.join("outputs", "tamil_sinhala_translation", model_id.split('/')[-1], QUERY_TYPE)
+    if not os.path.exists(OUTPUT_FOLDER):
+        os.makedirs(OUTPUT_FOLDER)
 
     predictions, bleu_results = predict(TSV_FILE)
