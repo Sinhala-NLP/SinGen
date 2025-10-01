@@ -27,20 +27,26 @@ pipe_lm = pipeline(
 )
 
 
-def get_few_shot_examples(full_df, test_df, num_examples=3):
+def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
     """
-    Get random few-shot examples from the dataset excluding test instances
+    Get random few-shot examples for a specific test instance
+    Each test instance will get different randomly selected examples
     """
     test_indices = set(test_df.index)
     available_indices = [i for i in full_df.index if i not in test_indices]
 
-    random.seed(42)
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
     simplification_columns = ['Simplification 1', 'Simplification 2', 'Simplification 3']
     few_shot_examples = []
 
-    random.shuffle(available_indices)
+    # Shuffle available indices for this specific instance
+    shuffled_indices = available_indices.copy()
+    random.shuffle(shuffled_indices)
 
-    for idx in available_indices:
+    for idx in shuffled_indices:
         if len(few_shot_examples) >= num_examples:
             break
 
@@ -399,25 +405,33 @@ def predict():
     rest_of_instances = full.head(len(full) - 200)
 
     # Get few-shot examples if using few-shot learning
-    few_shot_examples = None
     if QUERY_TYPE in ["few-shot", "few-shot-si"]:
-        print("Getting few-shot examples...")
+        print("Getting dynamic few-shot examples for each test instance...")
         print(f"Total dataset size: {len(full)}")
         print(f"Test instances (tail 200): {len(df)}")
         print(f"Available for few-shot examples: {len(rest_of_instances)}")
-        few_shot_examples = get_few_shot_examples(rest_of_instances, df, num_examples=3)
-        print(f"Selected {len(few_shot_examples)} few-shot examples")
 
-        # Print the examples for verification
-        print("\nFew-shot examples:")
-        for i, example in enumerate(few_shot_examples, 1):
-            print(f"Example {i}:")
-            print(f"  Complex: {example['complex'][:100]}...")
-            print(f"  Simple: {example['simple'][:100]}...")
-            print()
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                rest_of_instances,
+                df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=42  # Base seed for reproducibility
+            )
 
-    # Format chat messages
-    df['chat'] = df.apply(lambda row: format_chat(row, few_shot_examples), axis=1)
+            # Format the chat with these examples
+            chat_message = format_chat(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples")
+    else:
+        # Use zero-shot formatting
+        df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
 
     # Generate responses
     print("Generating predictions...")
@@ -452,6 +466,7 @@ def predict():
         f.write(f"Model: {model_id}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"Reference columns: {', '.join(sari_results['reference_columns'])}\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"Mean SARI Score: {sari_results['mean_sari']:.4f}\n")
