@@ -144,16 +144,22 @@ def tokenize(text):
     return tokens
 
 
-def calculate_bleu_score(reference: str, prediction: str, max_n: int = 4) -> float:
+def calculate_bleu_score_individual(reference: str, prediction: str, max_n: int = 4):
     """
-    Calculate BLEU score for a single translation
-    Simplified implementation focusing on n-gram precision
+    Calculate individual BLEU scores (BLEU-1, BLEU-2, BLEU-3, BLEU-4) and overall BLEU
+    Returns a dictionary with individual scores and the overall BLEU score
     """
     ref_tokens = tokenize(reference)
     pred_tokens = tokenize(prediction)
 
     if not pred_tokens or not ref_tokens:
-        return 0.0
+        return {
+            'bleu_1': 0.0,
+            'bleu_2': 0.0,
+            'bleu_3': 0.0,
+            'bleu_4': 0.0,
+            'bleu_overall': 0.0
+        }
 
     # Calculate brevity penalty
     ref_len = len(ref_tokens)
@@ -166,6 +172,8 @@ def calculate_bleu_score(reference: str, prediction: str, max_n: int = 4) -> flo
 
     # Calculate n-gram precisions
     precisions = []
+    individual_bleu_scores = {}
+
     for n in range(1, max_n + 1):
         ref_ngrams = {}
         pred_ngrams = {}
@@ -192,59 +200,114 @@ def calculate_bleu_score(reference: str, prediction: str, max_n: int = 4) -> flo
         precision = clipped_count / total_count if total_count > 0 else 0.0
         precisions.append(precision)
 
-    # Calculate geometric mean of precisions
+        # Calculate individual BLEU-n score (with brevity penalty)
+        individual_bleu_scores[f'bleu_{n}'] = (bp * precision * 100) if precision > 0 else 0.0
+
+    # Calculate overall BLEU score (geometric mean of all precisions)
     if min(precisions) > 0:
         geo_mean = np.exp(np.mean([np.log(p) for p in precisions]))
     else:
         geo_mean = 0.0
 
-    # BLEU score
-    bleu = bp * geo_mean
-    return bleu * 100  # Convert to percentage
+    individual_bleu_scores['bleu_overall'] = bp * geo_mean * 100
+
+    return individual_bleu_scores
 
 
 def evaluate_bleu_scores(df):
     """
-    Calculate BLEU scores for the translations dataframe
+    Calculate individual and overall BLEU scores for the translations dataframe
     """
     print("\nCalculating BLEU scores...")
 
-    bleu_scores = []
+    bleu_1_scores = []
+    bleu_2_scores = []
+    bleu_3_scores = []
+    bleu_4_scores = []
+    bleu_overall_scores = []
+
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing BLEU"):
         reference = row['Sinhala']
         prediction = row['preds']
 
         if pd.isna(reference) or pd.isna(prediction) or not str(reference).strip() or not str(prediction).strip():
-            bleu_scores.append(0.0)
+            bleu_1_scores.append(0.0)
+            bleu_2_scores.append(0.0)
+            bleu_3_scores.append(0.0)
+            bleu_4_scores.append(0.0)
+            bleu_overall_scores.append(0.0)
             continue
 
-        bleu = calculate_bleu_score(str(reference), str(prediction))
-        bleu_scores.append(bleu)
+        scores = calculate_bleu_score_individual(str(reference), str(prediction))
+        bleu_1_scores.append(scores['bleu_1'])
+        bleu_2_scores.append(scores['bleu_2'])
+        bleu_3_scores.append(scores['bleu_3'])
+        bleu_4_scores.append(scores['bleu_4'])
+        bleu_overall_scores.append(scores['bleu_overall'])
 
-    df['bleu_score'] = bleu_scores
+    df['bleu_1'] = bleu_1_scores
+    df['bleu_2'] = bleu_2_scores
+    df['bleu_3'] = bleu_3_scores
+    df['bleu_4'] = bleu_4_scores
+    df['bleu_overall'] = bleu_overall_scores
 
-    # Calculate overall statistics
-    mean_bleu = np.mean(bleu_scores)
-    std_bleu = np.std(bleu_scores)
-    median_bleu = np.median(bleu_scores)
-
-    print(f"\n" + "=" * 60)
+    # Calculate statistics for each BLEU variant
+    print(f"\n" + "=" * 70)
     print(f"BLEU Score Evaluation Results:")
-    print(f"=" * 60)
-    print(f"Mean BLEU Score: {mean_bleu:.4f}")
-    print(f"Standard Deviation: {std_bleu:.4f}")
-    print(f"Median BLEU Score: {median_bleu:.4f}")
-    print(f"Min BLEU Score: {min(bleu_scores):.4f}")
-    print(f"Max BLEU Score: {max(bleu_scores):.4f}")
-    print(f"=" * 60)
+    print(f"=" * 70)
+
+    for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
+        scores = df[score_type].tolist()
+        print(f"\n{score_type.upper().replace('_', '-')}:")
+        print(f"  Mean:   {np.mean(scores):.4f}")
+        print(f"  Median: {np.median(scores):.4f}")
+        print(f"  Std:    {np.std(scores):.4f}")
+        print(f"  Min:    {np.min(scores):.4f}")
+        print(f"  Max:    {np.max(scores):.4f}")
+
+    print(f"=" * 70)
 
     return {
-        'mean_bleu': mean_bleu,
-        'std_bleu': std_bleu,
-        'median_bleu': median_bleu,
-        'min_bleu': min(bleu_scores),
-        'max_bleu': max(bleu_scores),
-        'scores': bleu_scores
+        'bleu_1': {
+            'mean': np.mean(bleu_1_scores),
+            'median': np.median(bleu_1_scores),
+            'std': np.std(bleu_1_scores),
+            'min': np.min(bleu_1_scores),
+            'max': np.max(bleu_1_scores),
+            'scores': bleu_1_scores
+        },
+        'bleu_2': {
+            'mean': np.mean(bleu_2_scores),
+            'median': np.median(bleu_2_scores),
+            'std': np.std(bleu_2_scores),
+            'min': np.min(bleu_2_scores),
+            'max': np.max(bleu_2_scores),
+            'scores': bleu_2_scores
+        },
+        'bleu_3': {
+            'mean': np.mean(bleu_3_scores),
+            'median': np.median(bleu_3_scores),
+            'std': np.std(bleu_3_scores),
+            'min': np.min(bleu_3_scores),
+            'max': np.max(bleu_3_scores),
+            'scores': bleu_3_scores
+        },
+        'bleu_4': {
+            'mean': np.mean(bleu_4_scores),
+            'median': np.median(bleu_4_scores),
+            'std': np.std(bleu_4_scores),
+            'min': np.min(bleu_4_scores),
+            'max': np.max(bleu_4_scores),
+            'scores': bleu_4_scores
+        },
+        'bleu_overall': {
+            'mean': np.mean(bleu_overall_scores),
+            'median': np.median(bleu_overall_scores),
+            'std': np.std(bleu_overall_scores),
+            'min': np.min(bleu_overall_scores),
+            'max': np.max(bleu_overall_scores),
+            'scores': bleu_overall_scores
+        }
     }
 
 
@@ -316,12 +379,15 @@ def predict(tsv_file_path):
         f.write(f"Model: {model_id}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
-        f.write(f"=" * 60 + "\n")
-        f.write(f"Mean BLEU Score: {bleu_results['mean_bleu']:.4f}\n")
-        f.write(f"Standard Deviation: {bleu_results['std_bleu']:.4f}\n")
-        f.write(f"Median BLEU Score: {bleu_results['median_bleu']:.4f}\n")
-        f.write(f"Min BLEU Score: {bleu_results['min_bleu']:.4f}\n")
-        f.write(f"Max BLEU Score: {bleu_results['max_bleu']:.4f}\n")
+        f.write(f"=" * 70 + "\n\n")
+
+        for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
+            f.write(f"{score_type.upper().replace('_', '-')}:\n")
+            f.write(f"  Mean:   {bleu_results[score_type]['mean']:.4f}\n")
+            f.write(f"  Median: {bleu_results[score_type]['median']:.4f}\n")
+            f.write(f"  Std:    {bleu_results[score_type]['std']:.4f}\n")
+            f.write(f"  Min:    {bleu_results[score_type]['min']:.4f}\n")
+            f.write(f"  Max:    {bleu_results[score_type]['max']:.4f}\n\n")
 
     print(f"Summary statistics saved to: {summary_file}")
 
@@ -332,7 +398,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
-
 
     args = parser.parse_args()
 
