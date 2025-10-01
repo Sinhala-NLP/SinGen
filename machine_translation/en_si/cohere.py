@@ -8,36 +8,67 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 import cohere
+from datasets import load_dataset
 
 
-def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
+def download_and_load_flores_en_si():
     """
-    Get random few-shot examples for a specific test instance
+    Downloads and loads FLORES-200 English-Sinhala dataset.
+    Returns dev and devtest DataFrames.
+    """
+    print("Loading FLORES-200 dataset for English-Sinhala...")
+
+    # Load the dataset - FLORES-200 from Muennighoff
+    # Use hyphenated format for language pairs
+    dataset = load_dataset("Muennighoff/flores200", "eng_Latn-sin_Sinh")
+
+    # Process dev and devtest splits
+    splits = {}
+    for split_name in ['dev', 'devtest']:
+        if split_name in dataset:
+            print(f"\nProcessing {split_name} split...")
+            split_data = dataset[split_name]
+
+            # Convert to pandas DataFrame
+            # FLORES-200 has 'sentence_eng_Latn' and 'sentence_sin_Sinh' columns
+            df = pd.DataFrame({
+                'english': split_data['sentence_eng_Latn'],
+                'sinhala': split_data['sentence_sin_Sinh']
+            })
+
+            splits[split_name] = df
+            print(f"{split_name.capitalize()} split size: {len(df)}")
+        else:
+            print(f"Warning: {split_name} split not found in dataset")
+
+    return splits.get('dev'), splits.get('devtest')
+
+
+def get_few_shot_examples_for_instance(dev_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance from dev set
     Each test instance will get different randomly selected examples
     """
-    # Get indices of test instances
-    test_indices = set(test_df.index)
-
-    # Get available examples (excluding test instances)
-    available_indices = [i for i in full_df.index if i not in test_indices]
-
     # Use instance-specific seed for randomization
     if seed is not None:
         random.seed(seed + instance_idx)
+
+    # Get available examples from dev set
+    available_indices = list(dev_df.index)
 
     # Randomly sample few-shot examples for this specific instance
     few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
 
     few_shot_examples = []
     for idx in few_shot_indices:
-        row = full_df.loc[idx]
+        row = dev_df.loc[idx]
 
-        # Check if both Tamil and Sinhala are available
-        if pd.notna(row['Tamil']) and pd.notna(row['Sinhala']) and \
-                str(row['Tamil']).strip() and str(row['Sinhala']).strip():
+        # Check if both English and Sinhala are available
+        if pd.notna(row['english']) and pd.notna(row['sinhala']) and \
+                str(row['english']).strip() and str(row['sinhala']).strip():
             example = {
-                'tamil': str(row['Tamil']),
-                'sinhala': str(row['Sinhala'])
+                'english': str(row['english']),
+                'sinhala': str(row['sinhala'])
             }
             few_shot_examples.append(example)
 
@@ -48,27 +79,27 @@ def format_chat_few_shot(row, few_shot_examples):
     """
     Format chat with few-shot examples for translation
     """
-    task_desc = "You are an expert translator specializing in Tamil to Sinhala translation. Translate the following Tamil sentence (T) into Sinhala accurately while preserving the meaning and context."
+    task_desc = "You are an expert translator specializing in English to Sinhala translation. Translate the following English sentence (E) into Sinhala accurately while preserving the meaning and context."
     action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
 
-    task_desc_si = "ඔබ දෙමළ සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත දෙමළ වාක්‍යය (T) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
+    task_desc_si = "ඔබ ඉංග්‍රීසි සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත ඉංග්‍රීසි වාක්‍යය (E) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
     action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
     # Build few-shot examples string
     examples_str = ""
     for i, example in enumerate(few_shot_examples, 1):
         examples_str += f"\nExample {i}:\n"
-        examples_str += f"T: {example['tamil']}\n"
+        examples_str += f"E: {example['english']}\n"
         examples_str += f"Translation: {example['sinhala']}\n"
 
     if QUERY_TYPE == "few-shot":
-        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow translate this sentence:\nT: {row['Tamil']}"
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow translate this sentence:\nE: {row['english']}"
         return {
             "role": "user",
             "content": prompt
         }
     elif QUERY_TYPE == "few-shot-si":
-        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය පරිවර්තනය කරන්න:\nT: {row['Tamil']}"
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය පරිවර්තනය කරන්න:\nE: {row['english']}"
         return {
             "role": "user",
             "content": prompt
@@ -76,12 +107,12 @@ def format_chat_few_shot(row, few_shot_examples):
     elif QUERY_TYPE == "zero-shot":
         return {
             "role": "user",
-            "content": f"{task_desc} {action_desc} T: {row['Tamil']}"
+            "content": f"{task_desc} {action_desc} E: {row['english']}"
         }
     elif QUERY_TYPE == "zero-shot-si":
         return {
             "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} T: {row['Tamil']}"
+            "content": f"{task_desc_si} {action_desc_si} E: {row['english']}"
         }
 
 
@@ -89,21 +120,21 @@ def format_chat(row):
     """
     Original format_chat function for zero-shot translation
     """
-    task_desc = "You are an expert translator specialising in Tamil to Sinhala translation. Translate the following Tamil sentence (T) into Sinhala accurately while preserving the meaning and context."
+    task_desc = "You are an expert translator specialising in English to Sinhala translation. Translate the following English sentence (E) into Sinhala accurately while preserving the meaning and context."
     action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
 
-    task_desc_si = "ඔබ දෙමළ සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත දෙමළ වාක්‍යය (T) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
+    task_desc_si = "ඔබ ඉංග්‍රීසි සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත ඉංග්‍රීසි වාක්‍යය (E) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
     action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
     if QUERY_TYPE == "zero-shot":
         return {
             "role": "user",
-            "content": f"{task_desc} {action_desc} T: {row['Tamil']}"
+            "content": f"{task_desc} {action_desc} E: {row['english']}"
         }
     elif QUERY_TYPE == "zero-shot-si":
         return {
             "role": "user",
-            "content": f"{task_desc_si} {action_desc_si} T: {row['Tamil']}"
+            "content": f"{task_desc_si} {action_desc_si} E: {row['english']}"
         }
 
 
@@ -231,7 +262,7 @@ def evaluate_bleu_scores(df):
     bleu_overall_scores = []
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing BLEU"):
-        reference = row['Sinhala']
+        reference = row['sinhala']
         prediction = row['preds']
 
         if pd.isna(reference) or pd.isna(prediction) or not str(reference).strip() or not str(prediction).strip():
@@ -315,37 +346,25 @@ def evaluate_bleu_scores(df):
     }
 
 
-def predict(tsv_file_path):
+def predict(dev_df, devtest_df):
     """Main prediction function"""
-    # Load the TSV file
-    print(f"Loading data from {tsv_file_path}...")
-    full_df = pd.read_csv(tsv_file_path, sep='\t', encoding='utf-8')
-
-    print(f"Total dataset size: {len(full_df)}")
-    print(f"Columns: {full_df.columns.tolist()}")
-
-    # Use last 1000 samples for testing
-    test_size = min(1000, len(full_df))
-    df = full_df.tail(test_size).copy()
-    print(f"Using last {test_size} samples for testing")
-
-    # Get the rest of the instances (excluding the tail)
-    rest_of_instances = full_df.head(len(full_df) - test_size)
+    print(f"Dev set size: {len(dev_df)}")
+    print(f"Devtest set size: {len(devtest_df)}")
+    print(f"Columns: {devtest_df.columns.tolist()}")
 
     # Get few-shot examples if using few-shot learning
     if QUERY_TYPE in ["few-shot", "few-shot-si"]:
         print("Getting dynamic few-shot examples for each test instance...")
-        print(f"Total dataset size: {len(full_df)}")
-        print(f"Test instances: {len(df)}")
-        print(f"Available for few-shot examples: {len(rest_of_instances)}")
+        print(f"Dev set available for few-shot examples: {len(dev_df)}")
+        print(f"Test instances (devtest): {len(devtest_df)}")
 
         # Apply few-shot formatting with dynamic example selection per instance
         chat_messages = []
-        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
-            # Get unique few-shot examples for this specific test instance
+        for idx, (test_idx, row) in enumerate(
+                tqdm(devtest_df.iterrows(), total=len(devtest_df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance from dev set
             few_shot_examples = get_few_shot_examples_for_instance(
-                rest_of_instances,
-                df,
+                dev_df,
                 instance_idx=idx,
                 num_examples=3,
                 seed=42  # Base seed for reproducibility
@@ -355,33 +374,33 @@ def predict(tsv_file_path):
             chat_message = format_chat_few_shot(row, few_shot_examples)
             chat_messages.append(chat_message)
 
-        df['chat'] = chat_messages
+        devtest_df['chat'] = chat_messages
         print(f"Each test instance has been assigned unique few-shot examples")
     else:
         # Use zero-shot formatting
-        df['chat'] = df.apply(format_chat, axis=1)
+        devtest_df['chat'] = devtest_df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating translations...")
-    responses = query_cohere(co, model_id, df['chat'].tolist())
-    df['responses'] = responses
+    responses = query_cohere(co, model_id, devtest_df['chat'].tolist())
+    devtest_df['responses'] = responses
 
     # Extract predictions
     print("Extracting translations...")
-    df['preds'] = df['responses'].apply(extract_translation)
+    devtest_df['preds'] = devtest_df['responses'].apply(extract_translation)
 
     # Save predictions
     predictions_file = os.path.join(OUTPUT_FOLDER, "predictions.csv")
-    df.to_csv(predictions_file, header=True, index=False, encoding='utf-8')
+    devtest_df.to_csv(predictions_file, header=True, index=False, encoding='utf-8')
     print(f"Predictions saved to: {predictions_file}")
 
     # Evaluate with BLEU score
     print("Evaluating translations with BLEU score...")
-    bleu_results = evaluate_bleu_scores(df)
+    bleu_results = evaluate_bleu_scores(devtest_df)
 
     # Save results with BLEU scores
     results_file = os.path.join(OUTPUT_FOLDER, "predictions_with_bleu.csv")
-    df.to_csv(results_file, header=True, index=False, encoding='utf-8')
+    devtest_df.to_csv(results_file, header=True, index=False, encoding='utf-8')
     print(f"Results with BLEU scores saved to: {results_file}")
 
     # Save summary statistics
@@ -390,9 +409,10 @@ def predict(tsv_file_path):
         f.write(f"BLEU Score Evaluation Results\n")
         f.write(f"Model: {model_id}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
-        f.write(f"Dataset Size: {len(df)} samples\n")
+        f.write(f"Dataset: FLORES-200 English-Sinhala (devtest split)\n")
+        f.write(f"Dataset Size: {len(devtest_df)} samples\n")
         if QUERY_TYPE in ["few-shot", "few-shot-si"]:
-            f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
+            f.write(f"Few-shot approach: Dynamic (unique examples per test instance from dev set)\n")
         f.write(f"=" * 70 + "\n\n")
 
         for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
@@ -405,7 +425,7 @@ def predict(tsv_file_path):
 
     print(f"Summary statistics saved to: {summary_file}")
 
-    return df['preds'].tolist(), bleu_results
+    return devtest_df['preds'].tolist(), bleu_results
 
 
 if __name__ == '__main__':
@@ -416,10 +436,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     QUERY_TYPE = args.query_type
-    TSV_FILE = os.path.join("machine_translation", "ta_si", "ta_si.tsv")
 
     print(f"Query type: {QUERY_TYPE}")
-    print(f"TSV file: {TSV_FILE}")
+
+    # Load datasets from HuggingFace
+    dev_df, devtest_df = download_and_load_flores_en_si()
+
+    if dev_df is None or devtest_df is None:
+        print("Error: Could not load required dataset splits")
+        exit(1)
 
     # Set up Cohere client
     COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
@@ -427,7 +452,7 @@ if __name__ == '__main__':
 
     model_id = "command-a-03-2025"
 
-    OUTPUT_FOLDER = os.path.join("outputs", "tamil_sinhala_translation", model_id, QUERY_TYPE)
+    OUTPUT_FOLDER = os.path.join("outputs", "english_sinhala_translation", model_id, QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    predictions, bleu_results = predict(TSV_FILE)
+    predictions, bleu_results = predict(dev_df, devtest_df)
