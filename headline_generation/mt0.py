@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from typing import List, Tuple
+import random
 
 import numpy as np
 import pandas as pd
@@ -30,7 +31,71 @@ print(checkpoint)
 QUERY_TYPE = "zero-shot"  # default
 
 
+def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance
+    Each test instance will get different randomly selected examples
+    """
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
+    # Randomly sample few-shot examples for this specific instance
+    few_shot_indices = random.sample(range(len(train_df)), min(num_examples, len(train_df)))
+
+    few_shot_examples = []
+    for idx in few_shot_indices:
+        row = train_df.iloc[idx]
+
+        # Skip if news content or headline is missing
+        if pd.notna(row['News Content']) and pd.notna(row['Headline']) and \
+                str(row['News Content']).strip() and str(row['Headline']).strip():
+            example = {
+                'content': str(row['News Content']),
+                'headline': str(row['Headline'])
+            }
+            few_shot_examples.append(example)
+
+    return few_shot_examples
+
+
+def format_chat_few_shot(row, few_shot_examples):
+    """
+    Format chat with few-shot examples for headline generation
+    """
+    task_desc = "You are an expert in Sinhala journalism. Generate a concise and informative headline for the following Sinhala news article. The headline should capture the main point of the article in a brief, engaging manner."
+    action_desc = "Return only the headline following the prefix 'Headline:' without any other text or explanations."
+
+    task_desc_si = "ඔබ සිංහල පුවත්පත් කලාවේ ප්‍රවීණයෙකු වන්න. පහත සිංහල පුවත් ලිපිය සඳහා සංක්ෂිප්ත හා තොරතුරුදායක සිරස්තලයක් ජනනය කරන්න. සිරස්තලය කෙටි, ආකර්ෂණීය ආකාරයෙන් ලිපියේ ප්‍රධාන කරුණ ග්‍රහණය කර ගත යුතුය."
+    action_desc_si = "'Headline:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිරස්තලය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+
+    # Build few-shot examples string
+    examples_str = ""
+    for i, example in enumerate(few_shot_examples, 1):
+        # Truncate content if too long for context
+        content_preview = example['content'][:500] + "..." if len(example['content']) > 500 else example['content']
+        examples_str += f"\nExample {i}:\n"
+        examples_str += f"News Content: {content_preview}\n"
+        examples_str += f"Headline: {example['headline']}\n"
+
+    if QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow generate a headline for this news article:\nNews Content: {row['News Content']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පුවත් ලිපිය සඳහා සිරස්තලයක් ජනනය කරන්න:\nNews Content: {row['News Content']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+
+
 def format_chat(row):
+    """
+    Original format_chat function for zero-shot headline generation
+    """
     task_desc = "You are an expert in Sinhala journalism. Generate a concise and informative headline for the following Sinhala news article. The headline should capture the main point of the article in a brief, engaging manner."
     action_desc = "Return only the headline following the prefix 'Headline:' without any other text or explanations."
 
@@ -242,22 +307,49 @@ def predict():
     print("Loading NSINA-Headlines dataset...")
     ds = load_dataset("sinhala-nlp/NSINA-Headlines")
 
+    train_df = ds["train"].to_pandas()
     test_df = ds["test"].to_pandas()
 
+    print(f"Train size: {len(train_df)}")
     print(f"Test size: {len(test_df)}")
     print(f"Columns: {test_df.columns.tolist()}")
 
     # Filter out rows with missing News Content or Headline
     test_df = test_df[test_df['News Content'].notna() & test_df['Headline'].notna()].copy()
+    train_df = train_df[train_df['News Content'].notna() & train_df['Headline'].notna()].copy()
 
-    print(f"After filtering - Test size: {len(test_df)}")
+    print(f"After filtering - Train size: {len(train_df)}, Test size: {len(test_df)}")
 
     # Use first 1000 test samples
     test_size = min(1000, len(test_df))
     df = test_df.head(test_size).copy()
     print(f"Using {len(df)} test samples")
 
-    df['chat'] = df.apply(format_chat, axis=1)
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting dynamic few-shot examples for each test instance...")
+        print(f"Available training examples: {len(train_df)}")
+
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                train_df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=777  # Base seed for reproducibility (matching set_seed)
+            )
+
+            # Format the chat with these examples
+            chat_message = format_chat_few_shot(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples")
+    else:
+        # Use zero-shot formatting
+        df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating headlines...")
@@ -290,6 +382,8 @@ def predict():
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset: NSINA-Headlines\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+            f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"ROUGE-1:\n")
         f.write(f"  Mean: {rouge_results['rouge1']['mean']:.4f}\n")
@@ -317,7 +411,8 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
+                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
