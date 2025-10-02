@@ -63,10 +63,10 @@ def format_chat_few_shot(row, few_shot_examples):
     """
     Format chat with few-shot examples for headline generation
     """
-    task_desc = "You are an expert in Sinhala journalism. Generate a concise and informative headline for the following Sinhala news article. The headline should capture the main point of the article in a brief, engaging manner."
+    task_desc = "Imagine you are an expert in Sinhala language. Generate a concise and informative headline for the following Sinhala news article. The headline should capture the main point of the article in a brief, engaging manner."
     action_desc = "Return only the headline following the prefix 'Headline:' without any other text or explanations."
 
-    task_desc_si = "ඔබ සිංහල පුවත්පත් කලාවේ ප්‍රවීණයෙකු වන්න. පහත සිංහල පුවත් ලිපිය සඳහා සංක්ෂිප්ත හා තොරතුරුදායක සිරස්තලයක් ජනනය කරන්න. සිරස්තලය කෙටි, ආකර්ෂණීය ආකාරයෙන් ලිපියේ ප්‍රධාන කරුණ ග්‍රහණය කර ගත යුතුය."
+    task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත සිංහල පුවත් ලිපිය සඳහා සංක්ෂිප්ත හා තොරතුරුදායක සිරස්තලයක් ජනනය කරන්න. සිරස්තලය කෙටි, ආකර්ෂණීය ආකාරයෙන් ලිපියේ ප්‍රධාන කරුණ ග්‍රහණය කර ගත යුතුය."
     action_desc_si = "'Headline:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිරස්තලය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
     # Build few-shot examples string
