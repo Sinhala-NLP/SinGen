@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from typing import List, Tuple
+import random
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,67 @@ print(checkpoint)
 
 # Query type is set later through argparse
 QUERY_TYPE = "zero-shot"  # default
+
+
+def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance
+    Each test instance will get different randomly selected examples
+    """
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
+    # Randomly sample few-shot examples for this specific instance
+    few_shot_indices = random.sample(range(len(train_df)), min(num_examples, len(train_df)))
+
+    few_shot_examples = []
+    for idx in few_shot_indices:
+        row = train_df.iloc[idx]
+
+        # Skip if text or summary is missing
+        if pd.notna(row['text']) and pd.notna(row['summary']) and \
+                str(row['text']).strip() and str(row['summary']).strip():
+            example = {
+                'text': str(row['text']),
+                'summary': str(row['summary'])
+            }
+            few_shot_examples.append(example)
+
+    return few_shot_examples
+
+
+def format_chat_few_shot(row, few_shot_examples):
+    """
+    Format chat with few-shot examples for summarization
+    """
+    task_desc = "Imagine you are an expert in Sinhala language. Please provide a concise summary of the following Sinhala text. The summary should capture the main ideas and key points while being significantly shorter than the original text."
+    action_desc = "Return the summary only following the prefix 'Summary:' without any other text or explanations."
+
+    task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත සිංහල පාඨයේ සංක්ෂිප්ත සාරාංශයක් ලබා දෙන්න. සාරාංශය මුල් පාඨයට වඩා බෙහෙවින් කෙටි වන අතර ප්‍රධාන අදහස් සහ ප්‍රධාන කරුණු ගත යුතුය."
+    action_desc_si = "'Summary:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සාරාංශය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+
+    # Build few-shot examples string
+    examples_str = ""
+    for i, example in enumerate(few_shot_examples, 1):
+        # Truncate text if too long for context
+        text_preview = example['text'][:500] + "..." if len(example['text']) > 500 else example['text']
+        examples_str += f"\nExample {i}:\n"
+        examples_str += f"Text: {text_preview}\n"
+        examples_str += f"Summary: {example['summary']}\n"
+
+    if QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow summarize this text:\nText: {row['text']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පාඨය සාරාංශ කරන්න:\nText: {row['text']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
 
 
 def format_chat(row):
@@ -242,15 +304,41 @@ def predict():
     print("Loading XL-Sum Sinhala dataset...")
     ds = load_dataset("csebuetnlp/xlsum", "sinhala", trust_remote_code=True)
 
+    train_df = ds["train"].to_pandas()
     test_df = ds["test"].to_pandas()
 
+    print(f"Train size: {len(train_df)}")
     print(f"Test size: {len(test_df)}")
 
     # Use entire test set
     df = test_df.copy()
     print(f"Using {len(df)} test samples")
 
-    df['chat'] = df.apply(format_chat, axis=1)
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting dynamic few-shot examples for each test instance...")
+        print(f"Available training examples: {len(train_df)}")
+
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                train_df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=42  # Base seed for reproducibility
+            )
+
+            # Format the chat with these examples
+            chat_message = format_chat_few_shot(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples")
+    else:
+        # Use zero-shot formatting
+        df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating summaries...")
@@ -282,6 +370,8 @@ def predict():
         f.write(f"Model: {checkpoint}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+            f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"ROUGE-1:\n")
         f.write(f"  Mean: {rouge_results['rouge1']['mean']:.4f}\n")
@@ -309,7 +399,8 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
+                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
