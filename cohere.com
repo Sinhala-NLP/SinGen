@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --partition=cpu-48h
+#SBATCH --partition=a2000-48h
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
 
