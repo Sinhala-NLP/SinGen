@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from typing import List, Tuple
+import random
 
 import numpy as np
 import pandas as pd
@@ -30,7 +31,87 @@ print(checkpoint)
 QUERY_TYPE = "zero-shot"  # default
 
 
+def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance
+    Each test instance will get different randomly selected examples
+    """
+    # Get indices of test instances
+    test_indices = set(test_df.index)
+
+    # Get available examples (excluding test instances)
+    available_indices = [i for i in full_df.index if i not in test_indices]
+
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
+    # Randomly sample few-shot examples for this specific instance
+    few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
+
+    simplification_columns = ['Simplification 1', 'Simplification 2', 'Simplification 3']
+
+    few_shot_examples = []
+    for idx in few_shot_indices:
+        row = full_df.loc[idx]
+
+        # Get available simplifications for this row
+        available_simplifications = []
+        for col in simplification_columns:
+            if col in row and pd.notna(row[col]) and str(row[col]).strip():
+                available_simplifications.append(str(row[col]))
+
+        # If no valid simplifications found, skip this example
+        if not available_simplifications:
+            continue
+
+        # Randomly select one simplification from available ones
+        selected_simple = random.choice(available_simplifications)
+
+        example = {
+            'complex': row['Complex'],
+            'simple': selected_simple
+        }
+        few_shot_examples.append(example)
+
+    return few_shot_examples
+
+
+def format_chat_few_shot(row, few_shot_examples):
+    """
+    Format chat with few-shot examples
+    """
+    task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
+    action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
+
+    task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න.පහත සිංහල වාක්‍යයට (S) සරල සිංහල වාක්‍යයක් ලබා දෙන්න. ඒ සඳහා මෙම පියවර තුන අනුගමනය කරන්න: (1) වාක්‍යයේ ප්‍රධාන අදහස ලබා ගන්න (2) දිගු වාක්‍ය කෙටි වාක්‍ය කිහිපයකට බෙදන්න (3) දුෂ්කර වචන සාමාන්‍යයෙන් භාවිතා වන පහසු වචන වලින් වෙනස් කරන්න සහ පද වින්‍යාසය සරල කරන්න."
+    action_desc_si = "'Simplified text:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සරල කළ වාක්‍යය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+
+    # Build few-shot examples string
+    examples_str = ""
+    for i, example in enumerate(few_shot_examples, 1):
+        examples_str += f"\nExample {i}:\n"
+        examples_str += f"S: {example['complex']}\n"
+        examples_str += f"Simplified text: {example['simple']}\n"
+
+    if QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow simplify this sentence:\nS: {row['Complex']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය සරල කරන්න:\nS: {row['Complex']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+
+
 def format_chat(row):
+    """
+    Original format_chat function for zero-shot approaches
+    """
     task_desc = "Imagine you are an expert in Sinhala language. Please provide a simplified version of the following Sinhala sentence (S) in Sinhala following these three steps; (1) Extract the main idea of the sentence (2) Split long sentences into shorter ones and (3) Lexical reordering, and replacing complex words with commonly used simple words."
     action_desc = "Return the simplified text only following the prefix 'Simplified text:' without any other text or explanations."
 
@@ -324,7 +405,37 @@ def predict():
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
     df = full.tail(200).copy()
 
-    df['chat'] = df.apply(format_chat, axis=1)
+    # Get the rest of the instances (excluding the tail 200)
+    rest_of_instances = full.head(len(full) - 200)
+
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting dynamic few-shot examples for each test instance...")
+        print(f"Total dataset size: {len(full)}")
+        print(f"Test instances (tail 200): {len(df)}")
+        print(f"Available for few-shot examples: {len(rest_of_instances)}")
+
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples for this specific test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                rest_of_instances,
+                df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=777  # Base seed for reproducibility (matching set_seed)
+            )
+
+            # Format the chat with these examples
+            chat_message = format_chat_few_shot(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples")
+    else:
+        # Use original zero-shot formatting
+        df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating predictions...")
@@ -360,6 +471,8 @@ def predict():
         f.write(f"Model: {checkpoint}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+            f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
         f.write(f"Reference columns: {', '.join(sari_results['reference_columns'])}\n")
         f.write(f"=" * 60 + "\n")
         f.write(f"Mean SARI Score: {sari_results['mean_sari']:.4f}\n")
@@ -375,7 +488,8 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
+                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")

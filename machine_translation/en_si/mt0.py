@@ -2,6 +2,7 @@ import argparse
 import os
 import re
 from typing import List
+import random
 
 import numpy as np
 import pandas as pd
@@ -63,7 +64,70 @@ def download_and_load_flores_en_si():
     return splits.get('dev'), splits.get('devtest')
 
 
+def get_few_shot_examples_for_instance(dev_df, instance_idx, num_examples=3, seed=None):
+    """
+    Get random few-shot examples for a specific test instance from the dev set
+    Each test instance will get different randomly selected examples
+    """
+    # Use instance-specific seed for randomization
+    if seed is not None:
+        random.seed(seed + instance_idx)
+
+    # Randomly sample few-shot examples from dev set
+    available_indices = list(dev_df.index)
+    few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
+
+    few_shot_examples = []
+    for idx in few_shot_indices:
+        row = dev_df.loc[idx]
+
+        # Check if both English and Sinhala are available
+        if pd.notna(row['english']) and pd.notna(row['sinhala']) and \
+                str(row['english']).strip() and str(row['sinhala']).strip():
+            example = {
+                'english': str(row['english']),
+                'sinhala': str(row['sinhala'])
+            }
+            few_shot_examples.append(example)
+
+    return few_shot_examples
+
+
+def format_chat_few_shot(row, few_shot_examples):
+    """
+    Format chat with few-shot examples for translation
+    """
+    task_desc = "You are an expert translator specializing in English to Sinhala translation. Translate the following English sentence (E) into Sinhala accurately while preserving the meaning and context."
+    action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
+
+    task_desc_si = "ඔබ ඉංග්‍රීසි සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත ඉංග්‍රීසි වාක්‍යය (E) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
+    action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
+
+    # Build few-shot examples string
+    examples_str = ""
+    for i, example in enumerate(few_shot_examples, 1):
+        examples_str += f"\nExample {i}:\n"
+        examples_str += f"E: {example['english']}\n"
+        examples_str += f"Translation: {example['sinhala']}\n"
+
+    if QUERY_TYPE == "few-shot":
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow translate this sentence:\nE: {row['english']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+    elif QUERY_TYPE == "few-shot-si":
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ වාක්‍යය පරිවර්තනය කරන්න:\nE: {row['english']}"
+        return {
+            "role": "user",
+            "content": prompt
+        }
+
+
 def format_chat(row):
+    """
+    Original format_chat function for zero-shot translation
+    """
     task_desc = "You are an expert translator specializing in English to Sinhala translation. Translate the following English sentence (E) into Sinhala accurately while preserving the meaning and context."
     action_desc = "Return only the Sinhala translation following the prefix 'Translation:' without any other text or explanations."
 
@@ -293,7 +357,32 @@ def predict(dev_df, devtest_df):
     # Use the devtest set for testing
     df = devtest_df.copy()
 
-    df['chat'] = df.apply(format_chat, axis=1)
+    # Get few-shot examples if using few-shot learning
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        print("Getting dynamic few-shot examples for each test instance from dev set...")
+        print(f"Dev set size (for few-shot examples): {len(dev_df)}")
+        print(f"Test instances (devtest): {len(df)}")
+
+        # Apply few-shot formatting with dynamic example selection per instance
+        chat_messages = []
+        for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            # Get unique few-shot examples from dev set for this test instance
+            few_shot_examples = get_few_shot_examples_for_instance(
+                dev_df,
+                instance_idx=idx,
+                num_examples=3,
+                seed=777  # Base seed for reproducibility (matching set_seed)
+            )
+
+            # Format the chat with these examples
+            chat_message = format_chat_few_shot(row, few_shot_examples)
+            chat_messages.append(chat_message)
+
+        df['chat'] = chat_messages
+        print(f"Each test instance has been assigned unique few-shot examples from dev set")
+    else:
+        # Use zero-shot formatting
+        df['chat'] = df.apply(format_chat, axis=1)
 
     # Generate responses
     print("Generating translations...")
@@ -326,6 +415,8 @@ def predict(dev_df, devtest_df):
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset: FLORES-200 English-Sinhala (devtest split)\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+            f.write(f"Few-shot approach: Dynamic (unique examples per test instance from dev set)\n")
         f.write(f"=" * 70 + "\n\n")
 
         for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
@@ -343,7 +434,8 @@ def predict(dev_df, devtest_df):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
+                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
     print(f"Query type: {QUERY_TYPE}")
