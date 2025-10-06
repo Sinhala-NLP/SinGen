@@ -489,7 +489,7 @@ if __name__ == '__main__':
     print(f"Query type: {QUERY_TYPE}")
 
     # Create output folder with query type
-    OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id.split('/')[-1], QUERY_TYPE)
+    OUTPUT_FOLDER = os.path.join("outputs", "text_summarisation", model_id.split('/')[-1], QUERY_TYPE)
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 
