@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""
+Unified Benchmark Runner for SinGen
+
+This script runs all benchmark tasks (text simplification, text summarization,
+headline generation, and machine translation) with a single command.
+
+Usage:
+    python run_all_benchmarks.py --model <model_name> --query_type <query_type>
+
+Arguments:
+    --model: Model backend to use (open_ai, cohere, hf_llm, mt0)
+    --query_type: Query type (zero-shot, zero-shot-si, few-shot, few-shot-si)
+
+Optional Arguments:
+    --tasks: Comma-separated list of tasks to run (default: all)
+            Options: simplification, summarization, headline, translation
+    --translation_pairs: Comma-separated list of translation pairs (default: all)
+            Options: en_si, ta_si, pi_si
+
+Examples:
+    # Run all benchmarks with Cohere model and zero-shot queries
+    python run_all_benchmarks.py --model cohere --query_type zero-shot
+
+    # Run only text simplification and summarization with OpenAI
+    python run_all_benchmarks.py --model open_ai --query_type few-shot --tasks simplification,summarization
+
+    # Run only English-Sinhala translation
+    python run_all_benchmarks.py --model hf_llm --query_type zero-shot-si --tasks translation --translation_pairs en_si
+"""
+
+import argparse
+import subprocess
+import sys
+from typing import List, Dict
+from datetime import datetime
+
+
+class BenchmarkRunner:
+    """Unified benchmark runner for all SinGen tasks."""
+
+    VALID_MODELS = ['open_ai', 'cohere', 'hf_llm', 'mt0']
+    VALID_QUERY_TYPES = ['zero-shot', 'zero-shot-si', 'few-shot', 'few-shot-si']
+    VALID_TASKS = ['simplification', 'summarization', 'headline', 'translation']
+    VALID_TRANSLATION_PAIRS = ['en_si', 'ta_si', 'pi_si']
+
+    # Map task names to module paths
+    TASK_MODULES = {
+        'simplification': 'text_simplification',
+        'summarization': 'text_summerisation',
+        'headline': 'headline_generation',
+    }
+
+    TRANSLATION_MODULE_PREFIX = 'machine_translation'
+
+    def __init__(self, model: str, query_type: str, tasks: List[str], translation_pairs: List[str]):
+        """
+        Initialize the benchmark runner.
+
+        Args:
+            model: Model backend name
+            query_type: Query type for benchmarks
+            tasks: List of tasks to run
+            translation_pairs: List of translation pairs to run
+        """
+        self.model = model
+        self.query_type = query_type
+        self.tasks = tasks
+        self.translation_pairs = translation_pairs
+        self.results: Dict[str, bool] = {}
+
+    def run_command(self, command: List[str], task_name: str) -> bool:
+        """
+        Run a benchmark command and track results.
+
+        Args:
+            command: Command to execute
+            task_name: Name of the task for logging
+
+        Returns:
+            True if successful, False otherwise
+        """
+        print(f"\n{'='*80}")
+        print(f"Running: {task_name}")
+        print(f"Command: {' '.join(command)}")
+        print(f"{'='*80}\n")
+
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+            print(result.stdout)
+            print(f"\n✓ {task_name} completed successfully!")
+            return True
+
+        except subprocess.CalledProcessError as e:
+            print(f"\n✗ {task_name} failed with error:")
+            print(e.stdout)
+            return False
+        except Exception as e:
+            print(f"\n✗ {task_name} failed with exception: {e}")
+            return False
+
+    def run_text_simplification(self):
+        """Run text simplification benchmark."""
+        task_name = f"Text Simplification ({self.model}, {self.query_type})"
+        module = f"{self.TASK_MODULES['simplification']}.{self.model}"
+        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        self.results[task_name] = self.run_command(command, task_name)
+
+    def run_text_summarization(self):
+        """Run text summarization benchmark."""
+        task_name = f"Text Summarization ({self.model}, {self.query_type})"
+        module = f"{self.TASK_MODULES['summarization']}.{self.model}"
+        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        self.results[task_name] = self.run_command(command, task_name)
+
+    def run_headline_generation(self):
+        """Run headline generation benchmark."""
+        task_name = f"Headline Generation ({self.model}, {self.query_type})"
+        module = f"{self.TASK_MODULES['headline']}.{self.model}"
+        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        self.results[task_name] = self.run_command(command, task_name)
+
+    def run_machine_translation(self):
+        """Run machine translation benchmarks for all specified language pairs."""
+        for pair in self.translation_pairs:
+            task_name = f"Machine Translation {pair.upper().replace('_', '-')} ({self.model}, {self.query_type})"
+            module = f"{self.TRANSLATION_MODULE_PREFIX}.{pair}.{self.model}"
+            command = ['python', '-m', module, f'--query_type={self.query_type}']
+            self.results[task_name] = self.run_command(command, task_name)
+
+    def run_all(self):
+        """Run all specified benchmarks."""
+        start_time = datetime.now()
+
+        print(f"\n{'#'*80}")
+        print(f"# SinGen Unified Benchmark Runner")
+        print(f"# Model: {self.model}")
+        print(f"# Query Type: {self.query_type}")
+        print(f"# Tasks: {', '.join(self.tasks)}")
+        if 'translation' in self.tasks:
+            print(f"# Translation Pairs: {', '.join(self.translation_pairs)}")
+        print(f"# Start Time: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'#'*80}\n")
+
+        # Run each specified task
+        if 'simplification' in self.tasks:
+            self.run_text_simplification()
+
+        if 'summarization' in self.tasks:
+            self.run_text_summarization()
+
+        if 'headline' in self.tasks:
+            self.run_headline_generation()
+
+        if 'translation' in self.tasks:
+            self.run_machine_translation()
+
+        # Print summary
+        end_time = datetime.now()
+        duration = end_time - start_time
+
+        print(f"\n\n{'#'*80}")
+        print(f"# Benchmark Summary")
+        print(f"{'#'*80}\n")
+
+        successful = sum(1 for v in self.results.values() if v)
+        total = len(self.results)
+
+        for task, success in self.results.items():
+            status = "✓ PASS" if success else "✗ FAIL"
+            print(f"{status}: {task}")
+
+        print(f"\n{'='*80}")
+        print(f"Total: {successful}/{total} tasks completed successfully")
+        print(f"Duration: {duration}")
+        print(f"End Time: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*80}\n")
+
+        # Exit with error code if any task failed
+        if successful < total:
+            sys.exit(1)
+
+
+def main():
+    """Main entry point for the unified benchmark runner."""
+    parser = argparse.ArgumentParser(
+        description='Run all SinGen benchmarks with a single command',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument(
+        '--model',
+        type=str,
+        required=True,
+        choices=BenchmarkRunner.VALID_MODELS,
+        help='Model backend to use'
+    )
+
+    parser.add_argument(
+        '--query_type',
+        type=str,
+        required=True,
+        choices=BenchmarkRunner.VALID_QUERY_TYPES,
+        help='Query type for benchmarks'
+    )
+
+    parser.add_argument(
+        '--tasks',
+        type=str,
+        default='all',
+        help='Comma-separated list of tasks to run (default: all). Options: simplification, summarization, headline, translation'
+    )
+
+    parser.add_argument(
+        '--translation_pairs',
+        type=str,
+        default='all',
+        help='Comma-separated list of translation pairs (default: all). Options: en_si, ta_si, pi_si'
+    )
+
+    args = parser.parse_args()
+
+    # Parse tasks
+    if args.tasks.lower() == 'all':
+        tasks = BenchmarkRunner.VALID_TASKS
+    else:
+        tasks = [t.strip() for t in args.tasks.split(',')]
+        # Validate tasks
+        invalid_tasks = set(tasks) - set(BenchmarkRunner.VALID_TASKS)
+        if invalid_tasks:
+            print(f"Error: Invalid tasks: {', '.join(invalid_tasks)}")
+            print(f"Valid tasks are: {', '.join(BenchmarkRunner.VALID_TASKS)}")
+            sys.exit(1)
+
+    # Parse translation pairs
+    if args.translation_pairs.lower() == 'all':
+        translation_pairs = BenchmarkRunner.VALID_TRANSLATION_PAIRS
+    else:
+        translation_pairs = [p.strip() for p in args.translation_pairs.split(',')]
+        # Validate translation pairs
+        invalid_pairs = set(translation_pairs) - set(BenchmarkRunner.VALID_TRANSLATION_PAIRS)
+        if invalid_pairs:
+            print(f"Error: Invalid translation pairs: {', '.join(invalid_pairs)}")
+            print(f"Valid pairs are: {', '.join(BenchmarkRunner.VALID_TRANSLATION_PAIRS)}")
+            sys.exit(1)
+
+    # Create and run benchmark runner
+    runner = BenchmarkRunner(args.model, args.query_type, tasks, translation_pairs)
+    runner.run_all()
+
+
+if __name__ == '__main__':
+    main()
