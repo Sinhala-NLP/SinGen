@@ -2,32 +2,44 @@
 
 ## TL;DR
 
-Run all benchmarks with a single command by just specifying the model name:
+Run all benchmarks with a single command:
 
 ```bash
+# RECOMMENDED: Specify both backend and model explicitly
+./run_benchmarks.sh --model <BACKEND> --model_name <MODEL_NAME> --query_type <QUERY_TYPE>
+
+# Or let it auto-detect the backend
 ./run_benchmarks.sh --model <MODEL_NAME> --query_type <QUERY_TYPE>
 ```
 
 ## Minimal Examples
 
-### Run Everything - Just Specify Your Model!
+### RECOMMENDED: Explicit Backend and Model
 ```bash
-# With any HuggingFace model (backend auto-detected)
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+# HuggingFace models
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
 
-# With OpenAI models (backend auto-detected)
-./run_benchmarks.sh --model gpt-4o --query_type few-shot
-./run_benchmarks.sh --model gpt-3.5-turbo --query_type zero-shot
+# OpenAI models
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot
+./run_benchmarks.sh --model open_ai --model_name gpt-3.5-turbo --query_type zero-shot
 
-# With Cohere models (backend auto-detected)
-./run_benchmarks.sh --model command-r --query_type zero-shot-si
-./run_benchmarks.sh --model command-r-plus --query_type few-shot
+# Cohere models
+./run_benchmarks.sh --model cohere --model_name command-r --query_type zero-shot-si
+./run_benchmarks.sh --model cohere --model_name command-r-plus --query_type few-shot
 
-# With MT0 models (backend auto-detected)
-./run_benchmarks.sh --model bigscience/mt0-xxl --query_type few-shot-si
+# MT0 models
+./run_benchmarks.sh --model mt0 --model_name bigscience/mt0-xxl --query_type few-shot-si
 ```
 
-### Or Use Backend Names (with default models)
+### Auto-Detect Backend (Quick but Less Explicit)
+```bash
+# Backend auto-detected from model name
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model gpt-4o --query_type few-shot
+./run_benchmarks.sh --model_name command-r --query_type zero-shot-si
+```
+
+### Use Backend with Default Model
 ```bash
 # Uses default Cohere model (command-r-03-2025)
 ./run_benchmarks.sh --model cohere --query_type zero-shot
@@ -45,24 +57,24 @@ Run all benchmarks with a single command by just specifying the model name:
 ### Run Specific Tasks
 ```bash
 # Only text simplification with any model
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification
 
 # Only translation tasks
-./run_benchmarks.sh --model gpt-4o --query_type few-shot --tasks translation
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot --tasks translation
 
 # Multiple specific tasks
-./run_benchmarks.sh --model command-r --query_type zero-shot \
+./run_benchmarks.sh --model cohere --model_name command-r --query_type zero-shot \
     --tasks simplification,summarization
 ```
 
 ### Run Specific Translation Pairs
 ```bash
 # Only English-Sinhala translation
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot \
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot \
     --tasks translation --translation_pairs en_si
 
 # Multiple translation pairs
-./run_benchmarks.sh --model gpt-4o --query_type few-shot \
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot \
     --tasks translation --translation_pairs en_si,ta_si
 ```
 
@@ -70,16 +82,36 @@ Run all benchmarks with a single command by just specifying the model name:
 
 | Parameter | Valid Values |
 |-----------|--------------|
-| `--model` | **Any model name** (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`) - backend auto-detected<br>OR backend names: `open_ai`, `cohere`, `hf_llm`, `mt0` |
-| `--query_type` | `zero-shot`, `zero-shot-si`, `few-shot`, `few-shot-si` |
+| `--model` | Backend names: `open_ai`, `cohere`, `hf_llm`, `mt0`<br>OR model name for auto-detection |
+| `--model_name` | Actual model name (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`) |
+| `--query_type` | `zero-shot`, `zero-shot-si`, `few-shot`, `few-shot-si` (REQUIRED) |
 | `--tasks` | `simplification`, `summarization`, `headline`, `translation`, `all` (default) |
 | `--translation_pairs` | `en_si`, `ta_si`, `pi_si`, `all` (default) |
 
-### Model Auto-Detection
+**Note**: At least one of `--model` or `--model_name` must be provided.
 
-The runner automatically detects the correct backend based on your model name:
-- **HuggingFace models**: Any model with `/` (e.g., `meta-llama/...`, `mistralai/...`) → uses `hf_llm` backend
-- **OpenAI models**: Models with `gpt-`, `gpt3`, `gpt4` → uses `open_ai` backend
+### Three Ways to Specify Models
+
+1. **RECOMMENDED: Both arguments** - Most explicit and clear
+   ```bash
+   --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct
+   ```
+
+2. **Only --model with backend name** - Uses default model for that backend
+   ```bash
+   --model cohere  # Uses command-r-03-2025
+   ```
+
+3. **Only --model or --model_name with model name** - Auto-detects backend
+   ```bash
+   --model gpt-4o  # Auto-detects open_ai backend
+   --model_name meta-llama/Meta-Llama-3-8B-Instruct  # Auto-detects hf_llm backend
+   ```
+
+### Backend Auto-Detection Rules
+
+- **HuggingFace models**: Any model with `/` → uses `hf_llm` backend
+- **OpenAI models**: Models with `gpt-` prefix → uses `open_ai` backend
 - **Cohere models**: Models with `command`, `coral`, `aya` → uses `cohere` backend
 - **MT0 models**: Models with `mt0` or `bigscience/mt0` → uses `mt0` backend
 

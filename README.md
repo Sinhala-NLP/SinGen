@@ -13,34 +13,35 @@ SinGen provides a unified framework for benchmarking language models across mult
 
 ## Quick Start
 
-### Run All Benchmarks with One Command - Just Specify Your Model!
+### Run All Benchmarks with One Command!
 
 ```bash
-# Run all benchmarks by simply providing the model name
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+# RECOMMENDED: Specify both backend and model explicitly
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
 ```
 
-That's it! The backend is automatically detected, and all benchmark tasks are executed (text simplification, summarization, headline generation, and machine translation for all language pairs).
+That's it! All benchmark tasks are executed (text simplification, summarization, headline generation, and machine translation for all language pairs).
 
 ### More Examples
 
 ```bash
-# With any HuggingFace model (backend auto-detected)
+# RECOMMENDED: Explicit backend and model name
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot
+./run_benchmarks.sh --model cohere --model_name command-r --query_type zero-shot-si
+
+# Quick: Auto-detect backend from model name
 ./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
-./run_benchmarks.sh --model mistralai/Mistral-7B-Instruct-v0.2 --query_type few-shot
-
-# With OpenAI models (backend auto-detected)
 ./run_benchmarks.sh --model gpt-4o --query_type few-shot
-./run_benchmarks.sh --model gpt-3.5-turbo --query_type zero-shot
 
-# With Cohere models (backend auto-detected)
-./run_benchmarks.sh --model command-r --query_type zero-shot-si
+# Use backend with default model
+./run_benchmarks.sh --model cohere --query_type zero-shot
 
 # Run specific tasks only
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification,summarization
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification,summarization
 
 # Run specific translation pairs only
-./run_benchmarks.sh --model gpt-4o --query_type few-shot --tasks translation --translation_pairs en_si
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot --tasks translation --translation_pairs en_si
 ```
 
 ## Installation
@@ -117,15 +118,35 @@ export COHERE_API_KEY="your-cohere-key"
 ## Usage Options
 
 ### Required Arguments
-- `--model`: **Any model name** (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`) - backend is auto-detected
-  - OR backend name (`open_ai`, `cohere`, `hf_llm`, `mt0`) to use default model for that backend
+- `--model`: Backend name (`open_ai`, `cohere`, `hf_llm`, `mt0`) OR model name for auto-detection
+- `--model_name`: Actual model name (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`)
 - `--query_type`: Query type (`zero-shot`, `zero-shot-si`, `few-shot`, `few-shot-si`)
+
+**Note**: At least one of `--model` or `--model_name` must be provided. See examples below.
 
 ### Optional Arguments
 - `--tasks`: Specific tasks to run (default: all)
   - Options: `simplification`, `summarization`, `headline`, `translation`
 - `--translation_pairs`: Translation pairs to run (default: all)
   - Options: `en_si`, `ta_si`, `pi_si`
+
+### Three Ways to Specify Models
+
+1. **RECOMMENDED: Both arguments** - Explicit control
+   ```bash
+   --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct
+   ```
+
+2. **Backend only** - Uses default model for that backend
+   ```bash
+   --model cohere  # Uses command-r-03-2025
+   ```
+
+3. **Model name only** - Auto-detects backend
+   ```bash
+   --model gpt-4o  # Auto-detects open_ai
+   --model_name meta-llama/Meta-Llama-3-8B-Instruct  # Auto-detects hf_llm
+   ```
 
 ## Output Structure
 
@@ -159,33 +180,33 @@ outputs/
 ### Compare Models on All Tasks
 ```bash
 # Test different models on all benchmarks
-./run_benchmarks.sh --model gpt-4o --query_type zero-shot
-./run_benchmarks.sh --model command-r --query_type zero-shot
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
-./run_benchmarks.sh --model mistralai/Mistral-7B-Instruct-v0.2 --query_type zero-shot
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type zero-shot
+./run_benchmarks.sh --model cohere --model_name command-r --query_type zero-shot
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model hf_llm --model_name mistralai/Mistral-7B-Instruct-v0.2 --query_type zero-shot
 ```
 
 ### Compare Query Types with Same Model
 ```bash
 # Test all query types with the same model
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot-si
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot-si
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot-si
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot-si
 ```
 
 ### Run Specific Task Combinations
 ```bash
 # Only text generation tasks (no translation)
-./run_benchmarks.sh --model gpt-4o --query_type few-shot \
+./run_benchmarks.sh --model open_ai --model_name gpt-4o --query_type few-shot \
     --tasks simplification,summarization,headline
 
 # Only translation tasks
-./run_benchmarks.sh --model command-r --query_type zero-shot-si \
+./run_benchmarks.sh --model cohere --model_name command-r --query_type zero-shot-si \
     --tasks translation
 
 # Only English-Sinhala translation
-./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot \
+./run_benchmarks.sh --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot \
     --tasks translation --translation_pairs en_si
 ```
 

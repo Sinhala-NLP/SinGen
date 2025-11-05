@@ -6,13 +6,17 @@ This script runs all benchmark tasks (text simplification, text summarization,
 headline generation, and machine translation) with a single command.
 
 Usage:
-    python run_all_benchmarks.py --model <model_name> --query_type <query_type>
+    python run_all_benchmarks.py --model <backend> --model_name <model> --query_type <query_type>
 
 Arguments:
-    --model: Model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r)
-             The backend (OpenAI, Cohere, HuggingFace, MT0) will be auto-detected
-             OR you can specify a backend explicitly: open_ai, cohere, hf_llm, mt0
+    --model: Backend name (open_ai, cohere, hf_llm, mt0) OR model name for auto-detection
+    --model_name: Actual model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o)
     --query_type: Query type (zero-shot, zero-shot-si, few-shot, few-shot-si)
+
+Note: You can provide:
+    - Both --model (backend) and --model_name (model): Explicit control
+    - Only --model: If backend name, uses default model; if model name, auto-detects backend
+    - Only --model_name: Auto-detects backend from model name
 
 Optional Arguments:
     --tasks: Comma-separated list of tasks to run (default: all)
@@ -21,19 +25,23 @@ Optional Arguments:
             Options: en_si, ta_si, pi_si
 
 Examples:
-    # Run with actual model name (auto-detects backend)
-    python run_all_benchmarks.py --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
-    python run_all_benchmarks.py --model gpt-4o --query_type few-shot
-    python run_all_benchmarks.py --model command-r --query_type zero-shot-si
+    # Explicit: Specify both backend and model name (RECOMMENDED)
+    python run_all_benchmarks.py --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+    python run_all_benchmarks.py --model open_ai --model_name gpt-4o --query_type few-shot
+    python run_all_benchmarks.py --model cohere --model_name command-r --query_type zero-shot-si
 
-    # Run with backend name (uses default model for that backend)
+    # Auto-detect backend from model name
+    python run_all_benchmarks.py --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+    python run_all_benchmarks.py --model_name gpt-4o --query_type few-shot
+
+    # Use backend with default model
     python run_all_benchmarks.py --model cohere --query_type zero-shot
 
     # Run specific tasks
-    python run_all_benchmarks.py --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot --tasks simplification,summarization
+    python run_all_benchmarks.py --model hf_llm --model_name meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot --tasks simplification,summarization
 
     # Run specific translation pairs
-    python run_all_benchmarks.py --model gpt-4o --query_type zero-shot-si --tasks translation --translation_pairs en_si
+    python run_all_benchmarks.py --model open_ai --model_name gpt-4o --query_type zero-shot-si --tasks translation --translation_pairs en_si
 """
 
 import argparse
@@ -278,8 +286,15 @@ def main():
     parser.add_argument(
         '--model',
         type=str,
-        required=True,
-        help='Model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r) or backend (open_ai, cohere, hf_llm, mt0)'
+        required=False,
+        help='Backend name (open_ai, cohere, hf_llm, mt0) OR model name for auto-detection'
+    )
+
+    parser.add_argument(
+        '--model_name',
+        type=str,
+        required=False,
+        help='Actual model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r)'
     )
 
     parser.add_argument(
@@ -306,10 +321,43 @@ def main():
 
     args = parser.parse_args()
 
-    # Detect backend and get actual model name
-    backend, model_name = ModelDetector.detect_backend(args.model)
-    print(f"Detected backend: {backend}")
-    print(f"Using model: {model_name}\n")
+    # Determine backend and model name from arguments
+    VALID_BACKENDS = ['open_ai', 'cohere', 'hf_llm', 'mt0']
+
+    if not args.model and not args.model_name:
+        print("Error: At least one of --model or --model_name must be provided")
+        sys.exit(1)
+
+    if args.model and args.model_name:
+        # Both provided: use model as backend, model_name as model
+        if args.model in VALID_BACKENDS:
+            backend = args.model
+            model_name = args.model_name
+            print(f"Using backend: {backend}")
+            print(f"Using model: {model_name}\n")
+        else:
+            print(f"Error: When both --model and --model_name are provided, --model must be a valid backend")
+            print(f"Valid backends: {', '.join(VALID_BACKENDS)}")
+            sys.exit(1)
+    elif args.model_name:
+        # Only model_name provided: auto-detect backend
+        backend, detected_model = ModelDetector.detect_backend(args.model_name)
+        model_name = args.model_name
+        print(f"Auto-detected backend: {backend}")
+        print(f"Using model: {model_name}\n")
+    else:
+        # Only model provided: detect if it's backend or model name
+        if args.model in VALID_BACKENDS:
+            # It's a backend name, use default model
+            backend = args.model
+            model_name = ModelDetector.DEFAULT_MODELS[backend]
+            print(f"Using backend: {backend}")
+            print(f"Using default model: {model_name}\n")
+        else:
+            # It's a model name, auto-detect backend
+            backend, model_name = ModelDetector.detect_backend(args.model)
+            print(f"Auto-detected backend: {backend}")
+            print(f"Using model: {model_name}\n")
 
     # Parse tasks
     if args.tasks.lower() == 'all':
