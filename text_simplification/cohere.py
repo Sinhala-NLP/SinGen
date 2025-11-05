@@ -564,15 +564,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--model_name', type=str, default='command-a-03-2025', required=False,
+                        help='Model name (default: command-a-03-2025)')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
+    MODEL_NAME = args.model_name
+    print(f"Model: {MODEL_NAME}")
     print(f"Query type: {QUERY_TYPE}")
 
     # Set up Cohere client
     COHERE_API_KEY = "<<your-api-key>>"  # Replace with your actual key
     co = cohere.ClientV2(COHERE_API_KEY)
 
-    model_id = "command-a-03-2025"  # or "command-a-03-2025" as per your need
+    model_id = MODEL_NAME  # Set from command line argument  # or "command-a-03-2025" as per your need
 
     OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id, QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)

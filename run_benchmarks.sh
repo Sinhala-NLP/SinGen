@@ -22,7 +22,9 @@ usage() {
 Usage: $0 --model <model_name> --query_type <query_type> [options]
 
 Required Arguments:
-    --model             Model backend (open_ai, cohere, hf_llm, mt0)
+    --model             Model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r)
+                        OR backend name (open_ai, cohere, hf_llm, mt0)
+                        Backend will be auto-detected from model name
     --query_type        Query type (zero-shot, zero-shot-si, few-shot, few-shot-si)
 
 Optional Arguments:
@@ -33,14 +35,19 @@ Optional Arguments:
     -h, --help         Show this help message
 
 Examples:
-    # Run all benchmarks with Cohere model
+    # Run all benchmarks with specific models (backend auto-detected)
+    $0 --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+    $0 --model gpt-4o --query_type few-shot
+    $0 --model command-r --query_type zero-shot-si
+
+    # Run with backend name (uses default model for that backend)
     $0 --model cohere --query_type zero-shot
 
-    # Run specific tasks with OpenAI
-    $0 --model open_ai --query_type few-shot --tasks simplification,summarization
+    # Run specific tasks
+    $0 --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot --tasks simplification,summarization
 
     # Run only English-Sinhala translation
-    $0 --model hf_llm --query_type zero-shot-si --tasks translation --translation_pairs en_si
+    $0 --model gpt-4o --query_type zero-shot-si --tasks translation --translation_pairs en_si
 
 EOF
     exit 1

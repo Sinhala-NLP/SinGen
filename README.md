@@ -13,29 +13,34 @@ SinGen provides a unified framework for benchmarking language models across mult
 
 ## Quick Start
 
-### Run All Benchmarks with One Command
+### Run All Benchmarks with One Command - Just Specify Your Model!
 
 ```bash
-# Run all benchmarks with a single command
-./run_benchmarks.sh --model cohere --query_type zero-shot
+# Run all benchmarks by simply providing the model name
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
 ```
 
-That's it! This will execute all benchmark tasks (text simplification, summarization, headline generation, and machine translation for all language pairs).
+That's it! The backend is automatically detected, and all benchmark tasks are executed (text simplification, summarization, headline generation, and machine translation for all language pairs).
 
 ### More Examples
 
 ```bash
-# With OpenAI GPT-4
-./run_benchmarks.sh --model open_ai --query_type few-shot
+# With any HuggingFace model (backend auto-detected)
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model mistralai/Mistral-7B-Instruct-v0.2 --query_type few-shot
 
-# With local Hugging Face model
-./run_benchmarks.sh --model hf_llm --query_type zero-shot-si
+# With OpenAI models (backend auto-detected)
+./run_benchmarks.sh --model gpt-4o --query_type few-shot
+./run_benchmarks.sh --model gpt-3.5-turbo --query_type zero-shot
+
+# With Cohere models (backend auto-detected)
+./run_benchmarks.sh --model command-r --query_type zero-shot-si
 
 # Run specific tasks only
-./run_benchmarks.sh --model cohere --query_type zero-shot --tasks simplification,summarization
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification,summarization
 
 # Run specific translation pairs only
-./run_benchmarks.sh --model open_ai --query_type few-shot --tasks translation --translation_pairs en_si
+./run_benchmarks.sh --model gpt-4o --query_type few-shot --tasks translation --translation_pairs en_si
 ```
 
 ## Installation
@@ -55,12 +60,25 @@ export COHERE_API_KEY="your-cohere-key"
 
 ## Supported Models
 
-| Model Type | Model Name | Parameter | Description |
-|------------|------------|-----------|-------------|
-| OpenAI API | GPT-4o | `open_ai` | OpenAI's latest model |
-| Cohere API | Command-R | `cohere` | Cohere's command model |
-| Hugging Face | Llama-3.3-70B | `hf_llm` | Local Llama model |
-| BigScience | MT0-XXL | `mt0` | Sequence-to-sequence model |
+**You can use ANY model by simply specifying its name!** The backend is automatically detected.
+
+### Automatic Backend Detection
+
+| Model Pattern | Backend | Examples |
+|---------------|---------|----------|
+| HuggingFace paths (with `/`) | `hf_llm` | `meta-llama/Meta-Llama-3-8B-Instruct`<br>`mistralai/Mistral-7B-Instruct-v0.2`<br>`google/gemma-7b` |
+| OpenAI models | `open_ai` | `gpt-4o`, `gpt-4`, `gpt-3.5-turbo` |
+| Cohere models | `cohere` | `command-r`, `command-r-plus`, `command` |
+| MT0 models | `mt0` | `bigscience/mt0-xxl`, `mt0-large` |
+
+### Or Use Backend Names with Default Models
+
+| Backend | Default Model | Description |
+|---------|---------------|-------------|
+| `open_ai` | `gpt-4o` | OpenAI's latest model |
+| `cohere` | `command-r-03-2025` | Cohere's command model |
+| `hf_llm` | `meta-llama/Llama-3.3-70B-Instruct` | HuggingFace Llama model |
+| `mt0` | `bigscience/mt0-xxl` | BigScience MT0 model |
 
 ## Query Types
 
@@ -99,7 +117,8 @@ export COHERE_API_KEY="your-cohere-key"
 ## Usage Options
 
 ### Required Arguments
-- `--model`: Model to use (`open_ai`, `cohere`, `hf_llm`, `mt0`)
+- `--model`: **Any model name** (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`) - backend is auto-detected
+  - OR backend name (`open_ai`, `cohere`, `hf_llm`, `mt0`) to use default model for that backend
 - `--query_type`: Query type (`zero-shot`, `zero-shot-si`, `few-shot`, `few-shot-si`)
 
 ### Optional Arguments
@@ -139,53 +158,55 @@ outputs/
 
 ### Compare Models on All Tasks
 ```bash
-./run_benchmarks.sh --model open_ai --query_type zero-shot
-./run_benchmarks.sh --model cohere --query_type zero-shot
-./run_benchmarks.sh --model hf_llm --query_type zero-shot
-./run_benchmarks.sh --model mt0 --query_type zero-shot
+# Test different models on all benchmarks
+./run_benchmarks.sh --model gpt-4o --query_type zero-shot
+./run_benchmarks.sh --model command-r --query_type zero-shot
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model mistralai/Mistral-7B-Instruct-v0.2 --query_type zero-shot
 ```
 
 ### Compare Query Types with Same Model
 ```bash
-./run_benchmarks.sh --model cohere --query_type zero-shot
-./run_benchmarks.sh --model cohere --query_type zero-shot-si
-./run_benchmarks.sh --model cohere --query_type few-shot
-./run_benchmarks.sh --model cohere --query_type few-shot-si
+# Test all query types with the same model
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot-si
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot-si
 ```
 
 ### Run Specific Task Combinations
 ```bash
 # Only text generation tasks (no translation)
-./run_benchmarks.sh --model open_ai --query_type few-shot \
+./run_benchmarks.sh --model gpt-4o --query_type few-shot \
     --tasks simplification,summarization,headline
 
 # Only translation tasks
-./run_benchmarks.sh --model cohere --query_type zero-shot-si \
+./run_benchmarks.sh --model command-r --query_type zero-shot-si \
     --tasks translation
 
 # Only English-Sinhala translation
-./run_benchmarks.sh --model hf_llm --query_type few-shot \
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot \
     --tasks translation --translation_pairs en_si
 ```
 
 ## Running Individual Tasks
 
-You can also run individual benchmark tasks:
+You can also run individual benchmark tasks with specific models:
 
 ```bash
-# Text simplification
-python -m text_simplification.cohere --query_type=zero-shot
+# Text simplification with custom model
+python -m text_simplification.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct
 
-# Text summarization
-python -m text_summerisation.open_ai --query_type=few-shot
+# Text summarization with OpenAI
+python -m text_summerisation.open_ai --query_type=few-shot --model_name=gpt-4o
 
-# Headline generation
-python -m headline_generation.hf_llm --query_type=zero-shot-si
+# Headline generation with Cohere
+python -m headline_generation.cohere --query_type=zero-shot-si --model_name=command-r
 
-# Machine translation
-python -m machine_translation.en_si.cohere --query_type=few-shot-si
-python -m machine_translation.ta_si.open_ai --query_type=zero-shot
-python -m machine_translation.pi_si.hf_llm --query_type=few-shot
+# Machine translation with specific models
+python -m machine_translation.en_si.hf_llm --query_type=few-shot-si --model_name=meta-llama/Meta-Llama-3-8B-Instruct
+python -m machine_translation.ta_si.open_ai --query_type=zero-shot --model_name=gpt-3.5-turbo
+python -m machine_translation.pi_si.cohere --query_type=few-shot --model_name=command-r-plus
 ```
 
 ## Requirements

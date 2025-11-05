@@ -13,7 +13,7 @@ from transformers import pipeline, set_seed
 
 set_seed(777)
 
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
+model_id = MODEL_NAME  # Set from command line argument
 
 print(model_id)
 
@@ -415,13 +415,17 @@ def predict():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--model_name', type=str, default='meta-llama/Llama-3.3-70B-Instruct', required=False,
+                        help='Model name or path (default: meta-llama/Llama-3.3-70B-Instruct)')
 
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
+    MODEL_NAME = args.model_name
+    print(f"Model: {MODEL_NAME}")
     print(f"Query type: {QUERY_TYPE}")
 
     # Create output folder with query type
-    OUTPUT_FOLDER = os.path.join("outputs", "headline_generation", model_id.split('/')[-1], QUERY_TYPE)
+    OUTPUT_FOLDER = os.path.join("outputs", "headline_generation", MODEL_NAME.split(\'/\')[-1], QUERY_TYPE)
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 

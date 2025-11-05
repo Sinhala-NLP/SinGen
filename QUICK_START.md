@@ -2,50 +2,67 @@
 
 ## TL;DR
 
-Run all benchmarks with a single command:
+Run all benchmarks with a single command by just specifying the model name:
 
 ```bash
-./run_benchmarks.sh --model <MODEL> --query_type <QUERY_TYPE>
+./run_benchmarks.sh --model <MODEL_NAME> --query_type <QUERY_TYPE>
 ```
 
 ## Minimal Examples
 
-### Run Everything
+### Run Everything - Just Specify Your Model!
 ```bash
-# With Cohere API
+# With any HuggingFace model (backend auto-detected)
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+
+# With OpenAI models (backend auto-detected)
+./run_benchmarks.sh --model gpt-4o --query_type few-shot
+./run_benchmarks.sh --model gpt-3.5-turbo --query_type zero-shot
+
+# With Cohere models (backend auto-detected)
+./run_benchmarks.sh --model command-r --query_type zero-shot-si
+./run_benchmarks.sh --model command-r-plus --query_type few-shot
+
+# With MT0 models (backend auto-detected)
+./run_benchmarks.sh --model bigscience/mt0-xxl --query_type few-shot-si
+```
+
+### Or Use Backend Names (with default models)
+```bash
+# Uses default Cohere model (command-r-03-2025)
 ./run_benchmarks.sh --model cohere --query_type zero-shot
 
-# With OpenAI API
+# Uses default OpenAI model (gpt-4o)
 ./run_benchmarks.sh --model open_ai --query_type few-shot
 
-# With local Hugging Face model
+# Uses default HuggingFace model (Llama-3.3-70B-Instruct)
 ./run_benchmarks.sh --model hf_llm --query_type zero-shot-si
 
-# With MT0 model
+# Uses default MT0 model (bigscience/mt0-xxl)
 ./run_benchmarks.sh --model mt0 --query_type few-shot-si
 ```
 
 ### Run Specific Tasks
 ```bash
-# Only text simplification
-./run_benchmarks.sh --model cohere --query_type zero-shot --tasks simplification
+# Only text simplification with any model
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot --tasks simplification
 
 # Only translation tasks
-./run_benchmarks.sh --model open_ai --query_type few-shot --tasks translation
+./run_benchmarks.sh --model gpt-4o --query_type few-shot --tasks translation
 
 # Multiple specific tasks
-./run_benchmarks.sh --model hf_llm --query_type zero-shot \
+./run_benchmarks.sh --model command-r --query_type zero-shot \
     --tasks simplification,summarization
 ```
 
 ### Run Specific Translation Pairs
 ```bash
 # Only English-Sinhala translation
-./run_benchmarks.sh --model cohere --query_type zero-shot \
+./run_benchmarks.sh --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot \
     --tasks translation --translation_pairs en_si
 
 # Multiple translation pairs
-./run_benchmarks.sh --model open_ai --query_type few-shot \
+./run_benchmarks.sh --model gpt-4o --query_type few-shot \
     --tasks translation --translation_pairs en_si,ta_si
 ```
 
@@ -53,10 +70,18 @@ Run all benchmarks with a single command:
 
 | Parameter | Valid Values |
 |-----------|--------------|
-| `--model` | `open_ai`, `cohere`, `hf_llm`, `mt0` |
+| `--model` | **Any model name** (e.g., `meta-llama/Meta-Llama-3-8B-Instruct`, `gpt-4o`, `command-r`) - backend auto-detected<br>OR backend names: `open_ai`, `cohere`, `hf_llm`, `mt0` |
 | `--query_type` | `zero-shot`, `zero-shot-si`, `few-shot`, `few-shot-si` |
 | `--tasks` | `simplification`, `summarization`, `headline`, `translation`, `all` (default) |
 | `--translation_pairs` | `en_si`, `ta_si`, `pi_si`, `all` (default) |
+
+### Model Auto-Detection
+
+The runner automatically detects the correct backend based on your model name:
+- **HuggingFace models**: Any model with `/` (e.g., `meta-llama/...`, `mistralai/...`) → uses `hf_llm` backend
+- **OpenAI models**: Models with `gpt-`, `gpt3`, `gpt4` → uses `open_ai` backend
+- **Cohere models**: Models with `command`, `coral`, `aya` → uses `cohere` backend
+- **MT0 models**: Models with `mt0` or `bigscience/mt0` → uses `mt0` backend
 
 ## Before Running
 
@@ -84,16 +109,17 @@ When you run with `--tasks all` (default), it executes:
 
 ### Example Task Breakdown
 
-**Model**: cohere
+**Model**: `meta-llama/Meta-Llama-3-8B-Instruct`
+**Detected Backend**: `hf_llm` (auto-detected)
 **Query Type**: zero-shot
 
 Executes:
-1. `python -m text_simplification.cohere --query_type=zero-shot`
-2. `python -m text_summerisation.cohere --query_type=zero-shot`
-3. `python -m headline_generation.cohere --query_type=zero-shot`
-4. `python -m machine_translation.en_si.cohere --query_type=zero-shot`
-5. `python -m machine_translation.ta_si.cohere --query_type=zero-shot`
-6. `python -m machine_translation.pi_si.cohere --query_type=zero-shot`
+1. `python -m text_simplification.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
+2. `python -m text_summerisation.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
+3. `python -m headline_generation.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
+4. `python -m machine_translation.en_si.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
+5. `python -m machine_translation.ta_si.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
+6. `python -m machine_translation.pi_si.hf_llm --query_type=zero-shot --model_name=meta-llama/Meta-Llama-3-8B-Instruct`
 
 ## Output Location
 

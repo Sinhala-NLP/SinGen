@@ -437,15 +437,19 @@ def predict():
 
 
 if __name__ == '__main__':
-    model_id = "gpt-4o"
+    model_id = MODEL_NAME  # Set from command line argument
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--model_name', type=str, default='gpt-4o', required=False,
+                        help='Model name (default: gpt-4o)')
 
     args = parser.parse_args()
 
     QUERY_TYPE = args.query_type
+    MODEL_NAME = args.model_name
+    print(f"Model: {MODEL_NAME}")
 
     print(f"Query type: {QUERY_TYPE}")
     print(f"Dataset: sinhala-nlp/pali-sinhala (from HuggingFace)")

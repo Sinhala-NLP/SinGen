@@ -13,7 +13,7 @@ from datasets import load_dataset
 
 set_seed(777)
 
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
+model_id = MODEL_NAME  # Set from command line argument
 
 print(model_id)
 
@@ -446,10 +446,14 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--model_name', type=str, default='meta-llama/Llama-3.3-70B-Instruct', required=False,
+                        help='Model name or path (default: meta-llama/Llama-3.3-70B-Instruct)')
 
     args = parser.parse_args()
 
     QUERY_TYPE = args.query_type
+    MODEL_NAME = args.model_name
+    print(f"Model: {MODEL_NAME}")
 
     print(f"Query type: {QUERY_TYPE}")
 
@@ -462,7 +466,7 @@ if __name__ == '__main__':
         exit(1)
 
     # Create output folder with query type
-    OUTPUT_FOLDER = os.path.join("outputs", "pali_sinhala_translation", model_id.split('/')[-1], QUERY_TYPE)
+    OUTPUT_FOLDER = os.path.join("outputs", "pali_sinhala_translation", MODEL_NAME.split(\'/\')[-1], QUERY_TYPE)
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 

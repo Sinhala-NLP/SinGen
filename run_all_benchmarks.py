@@ -9,7 +9,9 @@ Usage:
     python run_all_benchmarks.py --model <model_name> --query_type <query_type>
 
 Arguments:
-    --model: Model backend to use (open_ai, cohere, hf_llm, mt0)
+    --model: Model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r)
+             The backend (OpenAI, Cohere, HuggingFace, MT0) will be auto-detected
+             OR you can specify a backend explicitly: open_ai, cohere, hf_llm, mt0
     --query_type: Query type (zero-shot, zero-shot-si, few-shot, few-shot-si)
 
 Optional Arguments:
@@ -19,27 +21,93 @@ Optional Arguments:
             Options: en_si, ta_si, pi_si
 
 Examples:
-    # Run all benchmarks with Cohere model and zero-shot queries
+    # Run with actual model name (auto-detects backend)
+    python run_all_benchmarks.py --model meta-llama/Meta-Llama-3-8B-Instruct --query_type zero-shot
+    python run_all_benchmarks.py --model gpt-4o --query_type few-shot
+    python run_all_benchmarks.py --model command-r --query_type zero-shot-si
+
+    # Run with backend name (uses default model for that backend)
     python run_all_benchmarks.py --model cohere --query_type zero-shot
 
-    # Run only text simplification and summarization with OpenAI
-    python run_all_benchmarks.py --model open_ai --query_type few-shot --tasks simplification,summarization
+    # Run specific tasks
+    python run_all_benchmarks.py --model meta-llama/Meta-Llama-3-8B-Instruct --query_type few-shot --tasks simplification,summarization
 
-    # Run only English-Sinhala translation
-    python run_all_benchmarks.py --model hf_llm --query_type zero-shot-si --tasks translation --translation_pairs en_si
+    # Run specific translation pairs
+    python run_all_benchmarks.py --model gpt-4o --query_type zero-shot-si --tasks translation --translation_pairs en_si
 """
 
 import argparse
 import subprocess
 import sys
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from datetime import datetime
+
+
+class ModelDetector:
+    """Automatically detect which backend to use based on model name."""
+
+    # Known model patterns for auto-detection
+    OPENAI_PATTERNS = [
+        'gpt-', 'gpt3', 'gpt4', 'text-davinci', 'text-curie', 'text-babbage',
+        'text-ada', 'davinci', 'curie', 'babbage', 'ada'
+    ]
+
+    COHERE_PATTERNS = [
+        'command', 'coral', 'aya'
+    ]
+
+    MT0_PATTERNS = [
+        'mt0', 'bigscience/mt0'
+    ]
+
+    # Default models for each backend
+    DEFAULT_MODELS = {
+        'open_ai': 'gpt-4o',
+        'cohere': 'command-r-03-2025',
+        'hf_llm': 'meta-llama/Llama-3.3-70B-Instruct',
+        'mt0': 'bigscience/mt0-xxl'
+    }
+
+    @classmethod
+    def detect_backend(cls, model_name: str) -> Tuple[str, str]:
+        """
+        Detect backend from model name.
+
+        Args:
+            model_name: Model name or backend name
+
+        Returns:
+            Tuple of (backend_name, actual_model_name)
+        """
+        model_lower = model_name.lower()
+
+        # Check if it's already a backend name
+        if model_name in ['open_ai', 'cohere', 'hf_llm', 'mt0']:
+            return model_name, cls.DEFAULT_MODELS[model_name]
+
+        # Check OpenAI patterns
+        for pattern in cls.OPENAI_PATTERNS:
+            if pattern in model_lower:
+                return 'open_ai', model_name
+
+        # Check Cohere patterns
+        for pattern in cls.COHERE_PATTERNS:
+            if pattern in model_lower:
+                return 'cohere', model_name
+
+        # Check MT0 patterns
+        for pattern in cls.MT0_PATTERNS:
+            if pattern in model_lower:
+                return 'mt0', model_name
+
+        # Default to HuggingFace for anything else (including model paths with /)
+        # Most custom models are HuggingFace models
+        return 'hf_llm', model_name
 
 
 class BenchmarkRunner:
     """Unified benchmark runner for all SinGen tasks."""
 
-    VALID_MODELS = ['open_ai', 'cohere', 'hf_llm', 'mt0']
     VALID_QUERY_TYPES = ['zero-shot', 'zero-shot-si', 'few-shot', 'few-shot-si']
     VALID_TASKS = ['simplification', 'summarization', 'headline', 'translation']
     VALID_TRANSLATION_PAIRS = ['en_si', 'ta_si', 'pi_si']
@@ -53,17 +121,20 @@ class BenchmarkRunner:
 
     TRANSLATION_MODULE_PREFIX = 'machine_translation'
 
-    def __init__(self, model: str, query_type: str, tasks: List[str], translation_pairs: List[str]):
+    def __init__(self, backend: str, model_name: str, query_type: str,
+                 tasks: List[str], translation_pairs: List[str]):
         """
         Initialize the benchmark runner.
 
         Args:
-            model: Model backend name
+            backend: Backend name (open_ai, cohere, hf_llm, mt0)
+            model_name: Actual model name to use
             query_type: Query type for benchmarks
             tasks: List of tasks to run
             translation_pairs: List of translation pairs to run
         """
-        self.model = model
+        self.backend = backend
+        self.model_name = model_name
         self.query_type = query_type
         self.tasks = tasks
         self.translation_pairs = translation_pairs
@@ -107,31 +178,39 @@ class BenchmarkRunner:
 
     def run_text_simplification(self):
         """Run text simplification benchmark."""
-        task_name = f"Text Simplification ({self.model}, {self.query_type})"
-        module = f"{self.TASK_MODULES['simplification']}.{self.model}"
-        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        task_name = f"Text Simplification ({self.model_name}, {self.query_type})"
+        module = f"{self.TASK_MODULES['simplification']}.{self.backend}"
+        command = ['python', '-m', module,
+                   f'--query_type={self.query_type}',
+                   f'--model_name={self.model_name}']
         self.results[task_name] = self.run_command(command, task_name)
 
     def run_text_summarization(self):
         """Run text summarization benchmark."""
-        task_name = f"Text Summarization ({self.model}, {self.query_type})"
-        module = f"{self.TASK_MODULES['summarization']}.{self.model}"
-        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        task_name = f"Text Summarization ({self.model_name}, {self.query_type})"
+        module = f"{self.TASK_MODULES['summarization']}.{self.backend}"
+        command = ['python', '-m', module,
+                   f'--query_type={self.query_type}',
+                   f'--model_name={self.model_name}']
         self.results[task_name] = self.run_command(command, task_name)
 
     def run_headline_generation(self):
         """Run headline generation benchmark."""
-        task_name = f"Headline Generation ({self.model}, {self.query_type})"
-        module = f"{self.TASK_MODULES['headline']}.{self.model}"
-        command = ['python', '-m', module, f'--query_type={self.query_type}']
+        task_name = f"Headline Generation ({self.model_name}, {self.query_type})"
+        module = f"{self.TASK_MODULES['headline']}.{self.backend}"
+        command = ['python', '-m', module,
+                   f'--query_type={self.query_type}',
+                   f'--model_name={self.model_name}']
         self.results[task_name] = self.run_command(command, task_name)
 
     def run_machine_translation(self):
         """Run machine translation benchmarks for all specified language pairs."""
         for pair in self.translation_pairs:
-            task_name = f"Machine Translation {pair.upper().replace('_', '-')} ({self.model}, {self.query_type})"
-            module = f"{self.TRANSLATION_MODULE_PREFIX}.{pair}.{self.model}"
-            command = ['python', '-m', module, f'--query_type={self.query_type}']
+            task_name = f"Machine Translation {pair.upper().replace('_', '-')} ({self.model_name}, {self.query_type})"
+            module = f"{self.TRANSLATION_MODULE_PREFIX}.{pair}.{self.backend}"
+            command = ['python', '-m', module,
+                       f'--query_type={self.query_type}',
+                       f'--model_name={self.model_name}']
             self.results[task_name] = self.run_command(command, task_name)
 
     def run_all(self):
@@ -140,7 +219,8 @@ class BenchmarkRunner:
 
         print(f"\n{'#'*80}")
         print(f"# SinGen Unified Benchmark Runner")
-        print(f"# Model: {self.model}")
+        print(f"# Model: {self.model_name}")
+        print(f"# Backend: {self.backend}")
         print(f"# Query Type: {self.query_type}")
         print(f"# Tasks: {', '.join(self.tasks)}")
         if 'translation' in self.tasks:
@@ -199,8 +279,7 @@ def main():
         '--model',
         type=str,
         required=True,
-        choices=BenchmarkRunner.VALID_MODELS,
-        help='Model backend to use'
+        help='Model name (e.g., meta-llama/Meta-Llama-3-8B-Instruct, gpt-4o, command-r) or backend (open_ai, cohere, hf_llm, mt0)'
     )
 
     parser.add_argument(
@@ -227,6 +306,11 @@ def main():
 
     args = parser.parse_args()
 
+    # Detect backend and get actual model name
+    backend, model_name = ModelDetector.detect_backend(args.model)
+    print(f"Detected backend: {backend}")
+    print(f"Using model: {model_name}\n")
+
     # Parse tasks
     if args.tasks.lower() == 'all':
         tasks = BenchmarkRunner.VALID_TASKS
@@ -252,7 +336,7 @@ def main():
             sys.exit(1)
 
     # Create and run benchmark runner
-    runner = BenchmarkRunner(args.model, args.query_type, tasks, translation_pairs)
+    runner = BenchmarkRunner(backend, model_name, args.query_type, tasks, translation_pairs)
     runner.run_all()
 
 

@@ -15,7 +15,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, set_seed
 set_seed(777)
 
 # Model checkpoint
-checkpoint = "bigscience/mt0-xxl"
+checkpoint = MODEL_NAME  # Set from command line argument
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
@@ -468,7 +468,7 @@ def predict():
     summary_file = os.path.join(OUTPUT_FOLDER, "sari_summary_multi_ref.txt")
     with open(summary_file, 'w', encoding='utf-8') as f:
         f.write(f"SARI Score Evaluation Results (Multiple References)\n")
-        f.write(f"Model: {checkpoint}\n")
+        f.write(f"Model: {MODEL_NAME}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
         if QUERY_TYPE in ["few-shot", "few-shot-si"]:
@@ -490,12 +490,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--model_name', type=str, default='bigscience/mt0-xxl', required=False,
+                        help='Model name or path (default: bigscience/mt0-xxl)')
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
+    MODEL_NAME = args.model_name
+    print(f"Model: {MODEL_NAME}")
     print(f"Query type: {QUERY_TYPE}")
 
     # Create output folder with query type
-    OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", checkpoint.split('/')[-1], QUERY_TYPE)
+    OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", MODEL_NAME.split(\'/\')[-1], QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     predictions, sari_results = predict()
