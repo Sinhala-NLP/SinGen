@@ -13,19 +13,6 @@ from transformers import pipeline, set_seed
 
 set_seed(777)
 
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
-
-print(model_id)
-
-pipe_lm = pipeline(
-    "text-generation",
-    model=model_id,
-    model_kwargs={"torch_dtype": torch.bfloat16},
-    device_map="auto",
-    do_sample=False,
-    top_p=1.0,
-)
-
 
 def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
     """
@@ -230,7 +217,7 @@ def calculate_rouge_l(reference_tokens, prediction_tokens):
     return precision, recall, f1
 
 
-def evaluate_rouge_scores(df):
+def evaluate_rouge_scores(df, model_id):
     """
     Calculate ROUGE scores for the predictions dataframe
     """
@@ -305,7 +292,7 @@ def evaluate_rouge_scores(df):
     return results
 
 
-def predict():
+def predict(pipe_lm, model_id):
     # Load the dataset
     print("Loading NSINA-Headlines dataset...")
     ds = load_dataset("sinhala-nlp/NSINA-Headlines")
@@ -370,7 +357,7 @@ def predict():
 
     # Evaluate with ROUGE
     print("Evaluating with ROUGE metrics...")
-    rouge_results = evaluate_rouge_scores(df)
+    rouge_results = evaluate_rouge_scores(df, model_id)
 
     # Save results with ROUGE scores
     results_file = os.path.join(OUTPUT_FOLDER, "predictions_with_rouge.csv")
@@ -414,10 +401,18 @@ def predict():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--query_type', type=str, default='zero-shot', required=False, help='Type of query')
+    parser.add_argument('--model_id', type=str, default='meta-llama/Llama-3.3-70B-Instruct',
+                        required=False, help='Model ID from HuggingFace')
+    parser.add_argument('--query_type', type=str, default='zero-shot',
+                        required=False, help='Type of query (zero-shot, zero-shot-si, few-shot, few-shot-si)')
 
     args = parser.parse_args()
+
+    # Set global variables
+    model_id = args.model_id
     QUERY_TYPE = args.query_type
+
+    print(f"Model: {model_id}")
     print(f"Query type: {QUERY_TYPE}")
 
     # Create output folder with query type
@@ -425,4 +420,19 @@ if __name__ == '__main__':
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 
-    predictions, rouge_results = predict()
+    # Initialize pipeline with the specified model
+    print(f"Loading model: {model_id}")
+    pipe_lm = pipeline(
+        "text-generation",
+        model=model_id,
+        model_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "flash_attention_2"  # ← Add this line
+        },
+        device_map="auto",
+        do_sample=False,
+        top_p=1.0,
+    )
+    print("Model loaded successfully!")
+
+    predictions, rouge_results = predict(pipe_lm, model_id)
