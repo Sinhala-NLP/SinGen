@@ -96,17 +96,33 @@ def query(pipe, inputs):
     """
     assistant_outputs = []
 
-    terminators = [
-        pipe.tokenizer.eos_token_id,
-        pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
+    # Build terminators list, only including valid token IDs
+    terminators = []
 
-    for out in tqdm(pipe(
-            inputs,
-            max_new_tokens=200,
-            eos_token_id=terminators,
-            pad_token_id=pipe.tokenizer.eos_token_id
-    )):
+    # Always add the standard EOS token if it exists
+    if pipe.tokenizer.eos_token_id is not None:
+        terminators.append(pipe.tokenizer.eos_token_id)
+
+    # Try to add model-specific terminators
+    # For Llama models
+    eot_token_id = pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    if eot_token_id is not None and eot_token_id != pipe.tokenizer.unk_token_id:
+        terminators.append(eot_token_id)
+
+    # For Qwen models - they typically use the standard eos_token
+    # No additional tokens needed
+
+    # Prepare generation kwargs
+    gen_kwargs = {
+        "max_new_tokens": 200,
+        "pad_token_id": pipe.tokenizer.eos_token_id
+    }
+
+    # Only add eos_token_id if we have valid terminators
+    if terminators:
+        gen_kwargs["eos_token_id"] = terminators
+
+    for out in tqdm(pipe(inputs, **gen_kwargs)):
         assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
 
     return assistant_outputs
