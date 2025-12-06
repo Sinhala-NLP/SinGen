@@ -13,19 +13,6 @@ from transformers import pipeline, set_seed
 
 set_seed(777)
 
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
-
-print(model_id)
-
-pipe_lm = pipeline(
-    "text-generation",
-    model=model_id,
-    model_kwargs={"torch_dtype": torch.bfloat16},
-    device_map="auto",
-    do_sample=False,
-    top_p=1.0,
-)
-
 
 def get_few_shot_examples_for_instance(full_df, test_df, instance_idx, num_examples=3, seed=None):
     """
@@ -397,7 +384,7 @@ def evaluate_sari_scores_multi_ref(df):
     }
 
 
-def predict():
+def predict(model_id, pipe_lm):
     full = Dataset.to_pandas(load_dataset('NLPC-UOM/SiTSE', split='train'))
     df = full.tail(200).copy()
 
@@ -484,14 +471,32 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--model_id', type=str, default='meta-llama/Llama-3.3-70B-Instruct', required=False,
+                        help='Model ID to use for text generation')
 
     args = parser.parse_args()
     QUERY_TYPE = args.query_type
+    model_id = args.model_id
+
+    print(f"Model: {model_id}")
     print(f"Query type: {QUERY_TYPE}")
+
+    # Initialize the pipeline with the specified model
+    pipe_lm = pipeline(
+        "text-generation",
+        model=model_id,
+        model_kwargs={
+            "torch_dtype": torch.bfloat16,
+            "attn_implementation": "flash_attention_2"
+        },
+        device_map="auto",
+        do_sample=False,
+        top_p=1.0,
+    )
 
     # Create output folder with query type
     OUTPUT_FOLDER = os.path.join("outputs", "text_simplification", model_id.split('/')[-1], QUERY_TYPE)
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 
-    predictions, sari_results = predict()
+    predictions, sari_results = predict(model_id, pipe_lm)

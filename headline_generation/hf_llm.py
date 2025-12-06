@@ -427,7 +427,7 @@ if __name__ == '__main__':
         model=model_id,
         model_kwargs={
             "torch_dtype": torch.bfloat16,
-            "attn_implementation": "flash_attention_2"  # ← Add this line
+            "attn_implementation": "flash_attention_2"  
         },
         device_map="auto",
         do_sample=False,
