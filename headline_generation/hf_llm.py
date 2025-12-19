@@ -7,6 +7,7 @@ import random
 import numpy as np
 import pandas as pd
 import torch
+import intel_extension_for_pytorch as ipex
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
 from transformers import pipeline, set_seed
@@ -427,12 +428,13 @@ if __name__ == '__main__':
         model=model_id,
         model_kwargs={
             "torch_dtype": torch.bfloat16,
-            "attn_implementation": "flash_attention_2"  
         },
-        device_map="auto",
+        device_map="xpu",
         do_sample=False,
         top_p=1.0,
     )
+
+    pipe_lm.model = ipex.optimize(pipe_lm.model, dtype=torch.bfloat16)
     print("Model loaded successfully!")
 
     predictions, rouge_results = predict(pipe_lm, model_id)
