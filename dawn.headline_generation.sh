@@ -8,9 +8,9 @@
 
 module purge
 module load rhel8/default-dawn
-module load intelpython-conda
+module load intelpython-conda/2025.0
 
-conda activate ~/rds/conda_envs/llm_exp
+conda activate llm_env
 
 export HF_HOME=/home/dn-rana1/rds/hf_home/
 export HF_TOKEN=""
