@@ -428,8 +428,8 @@ if __name__ == '__main__':
         model=model_id,
         model_kwargs={
             "torch_dtype": torch.bfloat16,
+            "device_map": "auto",  # Changed from "xpu" to "auto" for multi-GPU
         },
-        device_map="xpu",
         do_sample=False,
         top_p=1.0,
     )
