@@ -3,6 +3,7 @@ import os
 import re
 from typing import List, Tuple
 import random
+import time
 
 import numpy as np
 import pandas as pd
@@ -10,9 +11,34 @@ import torch
 import intel_extension_for_pytorch as ipex
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
-from transformers import pipeline, set_seed
+from transformers import pipeline, set_seed, AutoModelForCausalLM, AutoTokenizer
+import gc
 
 set_seed(777)
+
+
+def log_gpu_memory():
+    """Log GPU memory usage for all available XPU devices"""
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        print("\n" + "="*60)
+        print("GPU Memory Usage:")
+        for i in range(torch.xpu.device_count()):
+            allocated = torch.xpu.memory_allocated(i) / 1024**3
+            reserved = torch.xpu.memory_reserved(i) / 1024**3
+            print(f"  GPU {i}:")
+            print(f"    Allocated: {allocated:.2f} GB")
+            print(f"    Reserved:  {reserved:.2f} GB")
+        print("="*60 + "\n")
+
+
+def clear_memory():
+    """Aggressively clear GPU memory"""
+    gc.collect()
+    if hasattr(torch, 'xpu'):
+        for i in range(torch.xpu.device_count()):
+            with torch.xpu.device(i):
+                torch.xpu.empty_cache()
+                torch.xpu.synchronize()
 
 
 def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
@@ -92,205 +118,56 @@ def query(pipe, inputs):
         pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
     ]
 
-    for out in tqdm(pipe(
-            inputs,
-            max_new_tokens=200,
-            eos_token_id=terminators,
-            pad_token_id=pipe.tokenizer.eos_token_id
-    )):
-        assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
+    print(f"\nProcessing {len(inputs)} inputs one at a time...")
+
+    # Process one at a time to avoid memory issues
+    for idx, single_input in enumerate(tqdm(inputs, desc="Generating headlines")):
+        # Clear memory every 10 iterations
+        if idx % 10 == 0:
+            clear_memory()
+
+        try:
+            out = pipe(
+                single_input,
+                max_new_tokens=150,
+                eos_token_id=terminators,
+                pad_token_id=pipe.tokenizer.eos_token_id,
+                num_return_sequences=1,
+            )
+            assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
+
+        except RuntimeError as e:
+            error_str = str(e)
+            if "OUT_OF_RESOURCES" in error_str or "out of memory" in error_str.lower():
+                print(f"\n[Sample {idx}] OOM error, clearing cache and retrying...")
+                clear_memory()
+
+                # Retry with shorter generation
+                try:
+                    out = pipe(
+                        single_input,
+                        max_new_tokens=80,  # Significantly reduced
+                        eos_token_id=terminators,
+                        pad_token_id=pipe.tokenizer.eos_token_id,
+                        num_return_sequences=1,
+                    )
+                    assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
+                    print(f"[Sample {idx}] Retry successful with reduced tokens")
+                except Exception as retry_e:
+                    print(f"[Sample {idx}] Retry failed: {retry_e}")
+                    assistant_outputs.append("")
+                    clear_memory()
+            else:
+                print(f"[Sample {idx}] Error: {e}")
+                assistant_outputs.append("")
+                clear_memory()
+
+        except Exception as e:
+            print(f"[Sample {idx}] Unexpected error: {e}")
+            assistant_outputs.append("")
+            clear_memory()
 
     return assistant_outputs
-
-
-def extract_headline(response):
-    """
-    Extract headline from model response
-    """
-    if not isinstance(response, str):
-        print(f"Non-string response: {response}")
-        return ""
-
-    try:
-        # Look for the "Headline:" pattern
-        matches = re.findall(r'Headline:\s*(.*?)(?:\n\n|\Z)', response, re.IGNORECASE | re.DOTALL)
-        if matches:
-            return matches[0].strip()
-
-        # Fallback: try without strict matching
-        if "headline:" in response.lower():
-            parts = response.lower().split("headline:")
-            if len(parts) > 1:
-                return parts[1].strip()
-
-        # Last resort: return the response as is
-        return response.strip()
-    except Exception as e:
-        print(f"Error extracting headline: {e}")
-        return ""
-
-
-# ROUGE Evaluation Functions
-def tokenize(text):
-    """Simple tokenization by splitting on whitespace"""
-    if pd.isna(text) or text is None:
-        return []
-    text = str(text).lower()
-    tokens = re.findall(r'\b\w+\b', text)
-    return tokens
-
-
-def calculate_rouge_n(reference_tokens, prediction_tokens, n=1):
-    """
-    Calculate ROUGE-N score
-    """
-
-    def get_ngrams(tokens, n):
-        if len(tokens) < n:
-            return []
-        return [tuple(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
-
-    ref_ngrams = get_ngrams(reference_tokens, n)
-    pred_ngrams = get_ngrams(prediction_tokens, n)
-
-    if len(ref_ngrams) == 0:
-        return 0.0, 0.0, 0.0
-
-    ref_ngram_counts = {}
-    for ngram in ref_ngrams:
-        ref_ngram_counts[ngram] = ref_ngram_counts.get(ngram, 0) + 1
-
-    pred_ngram_counts = {}
-    for ngram in pred_ngrams:
-        pred_ngram_counts[ngram] = pred_ngram_counts.get(ngram, 0) + 1
-
-    overlapping_ngrams = 0
-    for ngram, count in pred_ngram_counts.items():
-        if ngram in ref_ngram_counts:
-            overlapping_ngrams += min(count, ref_ngram_counts[ngram])
-
-    if len(pred_ngrams) == 0:
-        precision = 0.0
-    else:
-        precision = overlapping_ngrams / len(pred_ngrams)
-
-    recall = overlapping_ngrams / len(ref_ngrams)
-
-    if precision + recall == 0:
-        f1 = 0.0
-    else:
-        f1 = 2 * precision * recall / (precision + recall)
-
-    return precision, recall, f1
-
-
-def calculate_rouge_l(reference_tokens, prediction_tokens):
-    """
-    Calculate ROUGE-L score using Longest Common Subsequence
-    """
-
-    def lcs_length(x, y):
-        m, n = len(x), len(y)
-        dp = [[0] * (n + 1) for _ in range(m + 1)]
-
-        for i in range(1, m + 1):
-            for j in range(1, n + 1):
-                if x[i - 1] == y[j - 1]:
-                    dp[i][j] = dp[i - 1][j - 1] + 1
-                else:
-                    dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])
-
-        return dp[m][n]
-
-    if len(reference_tokens) == 0 or len(prediction_tokens) == 0:
-        return 0.0, 0.0, 0.0
-
-    lcs_len = lcs_length(reference_tokens, prediction_tokens)
-
-    precision = lcs_len / len(prediction_tokens) if len(prediction_tokens) > 0 else 0.0
-    recall = lcs_len / len(reference_tokens) if len(reference_tokens) > 0 else 0.0
-
-    if precision + recall == 0:
-        f1 = 0.0
-    else:
-        f1 = 2 * precision * recall / (precision + recall)
-
-    return precision, recall, f1
-
-
-def evaluate_rouge_scores(df, model_id):
-    """
-    Calculate ROUGE scores for the predictions dataframe
-    """
-    print("\nCalculating ROUGE scores...")
-
-    rouge1_scores = []
-    rouge2_scores = []
-    rougeL_scores = []
-
-    for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing ROUGE"):
-        reference = str(row['Headline'])
-        prediction = str(row['preds'])
-
-        ref_tokens = tokenize(reference)
-        pred_tokens = tokenize(prediction)
-
-        # ROUGE-1
-        _, _, rouge1_f1 = calculate_rouge_n(ref_tokens, pred_tokens, n=1)
-        rouge1_scores.append(rouge1_f1)
-
-        # ROUGE-2
-        _, _, rouge2_f1 = calculate_rouge_n(ref_tokens, pred_tokens, n=2)
-        rouge2_scores.append(rouge2_f1)
-
-        # ROUGE-L
-        _, _, rougeL_f1 = calculate_rouge_l(ref_tokens, pred_tokens)
-        rougeL_scores.append(rougeL_f1)
-
-    df['rouge1_score'] = rouge1_scores
-    df['rouge2_score'] = rouge2_scores
-    df['rougeL_score'] = rougeL_scores
-
-    # Calculate overall statistics
-    results = {
-        'rouge1': {
-            'mean': np.mean(rouge1_scores),
-            'std': np.std(rouge1_scores),
-            'median': np.median(rouge1_scores),
-            'min': np.min(rouge1_scores),
-            'max': np.max(rouge1_scores)
-        },
-        'rouge2': {
-            'mean': np.mean(rouge2_scores),
-            'std': np.std(rouge2_scores),
-            'median': np.median(rouge2_scores),
-            'min': np.min(rouge2_scores),
-            'max': np.max(rouge2_scores)
-        },
-        'rougeL': {
-            'mean': np.mean(rougeL_scores),
-            'std': np.std(rougeL_scores),
-            'median': np.median(rougeL_scores),
-            'min': np.min(rougeL_scores),
-            'max': np.max(rougeL_scores)
-        }
-    }
-
-    print(f"\n" + "=" * 60)
-    print(f"ROUGE Score Evaluation Results:")
-    print(f"=" * 60)
-    print(f"ROUGE-1:")
-    print(f"  Mean: {results['rouge1']['mean']:.4f}")
-    print(f"  Std:  {results['rouge1']['std']:.4f}")
-    print(f"ROUGE-2:")
-    print(f"  Mean: {results['rouge2']['mean']:.4f}")
-    print(f"  Std:  {results['rouge2']['std']:.4f}")
-    print(f"ROUGE-L:")
-    print(f"  Mean: {results['rougeL']['mean']:.4f}")
-    print(f"  Std:  {results['rougeL']['std']:.4f}")
-    print(f"=" * 60)
-
-    return results
 
 
 def predict(pipe_lm, model_id):
@@ -342,10 +219,21 @@ def predict(pipe_lm, model_id):
         # Use zero-shot formatting
         df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
 
+    # Log GPU memory before generation
+    print("\nGPU memory usage before generation:")
+    log_gpu_memory()
+
+    # Clear memory before starting generation
+    clear_memory()
+
     # Generate responses
     print("Generating headlines...")
     responses = query(pipe_lm, df['chat'].tolist())
     df['responses'] = responses
+
+    # Log GPU memory after generation
+    print("\nGPU memory usage after generation:")
+    log_gpu_memory()
 
     # Extract predictions
     print("Extracting headlines...")
@@ -375,6 +263,16 @@ def predict(pipe_lm, model_id):
         f.write(f"Dataset Size: {len(df)} samples\n")
         if QUERY_TYPE in ["few-shot", "few-shot-si"]:
             f.write(f"Few-shot approach: Dynamic (unique examples per test instance)\n")
+
+        # Add GPU info
+        if hasattr(torch, 'xpu') and torch.xpu.is_available():
+            f.write(f"\nGPU Configuration:\n")
+            f.write(f"  Number of GPUs: {torch.xpu.device_count()}\n")
+            for i in range(torch.xpu.device_count()):
+                allocated = torch.xpu.memory_allocated(i) / 1024 ** 3
+                reserved = torch.xpu.memory_reserved(i) / 1024 ** 3
+                f.write(f"  GPU {i} - Allocated: {allocated:.2f} GB, Reserved: {reserved:.2f} GB\n")
+
         f.write(f"=" * 60 + "\n")
         f.write(f"ROUGE-1:\n")
         f.write(f"  Mean: {rouge_results['rouge1']['mean']:.4f}\n")
@@ -421,21 +319,57 @@ if __name__ == '__main__':
     if not os.path.exists(OUTPUT_FOLDER):
         os.makedirs(OUTPUT_FOLDER)
 
-    # Initialize pipeline with the specified model
+    # Check available devices
+    if hasattr(torch, 'xpu') and torch.xpu.is_available():
+        num_gpus = torch.xpu.device_count()
+        print(f"Number of XPU devices available: {num_gpus}")
+
+    # Clear any existing memory
+    clear_memory()
+
+    # Load tokenizer
+    print(f"Loading tokenizer: {model_id}")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    # Load model with eager attention and max memory limit per device
     print(f"Loading model: {model_id}")
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        max_memory={0: "60GiB", 1: "60GiB", 2: "60GiB"},  # Leave headroom on each GPU
+        attn_implementation="eager",
+        low_cpu_mem_usage=True,
+    )
+
+    # Create pipeline
     pipe_lm = pipeline(
         "text-generation",
-        model=model_id,
-        model_kwargs={
-            "torch_dtype": torch.bfloat16,
-            "device_map": "auto",  # Changed from "xpu" to "auto" for multi-GPU
-        },
+        model=model,
+        tokenizer=tokenizer,
         do_sample=False,
         top_p=1.0,
     )
 
-    # pipe_lm.model = ipex.optimize(pipe_lm.model, dtype=torch.bfloat16)
-    print("Model loaded successfully (IPEX optimization skipped for multi-GPU setup)!")
+    # Check device distribution
+    if hasattr(model, 'hf_device_map'):
+        print("\nModel device map:")
+        device_distribution = {}
+        for name, device in model.hf_device_map.items():
+            device_distribution[device] = device_distribution.get(device, 0) + 1
+        for device, count in sorted(device_distribution.items()):
+            print(f"  {device}: {count} modules")
+    else:
+        print("\nNo explicit device map found")
 
+    print("Model loaded successfully!")
+
+    # Log initial GPU memory
+    print("\nInitial GPU memory usage:")
+    log_gpu_memory()
 
     predictions, rouge_results = predict(pipe_lm, model_id)
+
+    # Log final GPU memory
+    print("\nFinal GPU memory usage:")
+    log_gpu_memory()
