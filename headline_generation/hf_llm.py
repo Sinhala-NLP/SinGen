@@ -337,7 +337,7 @@ if __name__ == '__main__':
         model_id,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        max_memory={0: "60GiB", 1: "60GiB", 2: "60GiB"},  # Leave headroom on each GPU
+        max_memory={0: "50GiB", 1: "50GiB", 2: "50GiB"},  # Leave headroom on each GPU
         attn_implementation="eager",
         low_cpu_mem_usage=True,
     )
