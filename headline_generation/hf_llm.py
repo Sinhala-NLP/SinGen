@@ -17,6 +17,31 @@ import gc
 set_seed(777)
 
 
+def analyze_and_trim_dataset(df, max_length=2500):
+    """
+    Analyze article lengths and trim long ones
+    """
+    print("\nAnalyzing article lengths...")
+
+    # Get lengths
+    lengths = df['News Content'].apply(lambda x: len(str(x)))
+
+    print(f"Article length statistics:")
+    print(f"  Min: {lengths.min()} characters")
+    print(f"  Max: {lengths.max()} characters")
+    print(f"  Mean: {lengths.mean():.0f} characters")
+    print(f"  Median: {lengths.median():.0f} characters")
+    print(f"  Articles > {max_length} chars: {(lengths > max_length).sum()}")
+
+    # Trim long articles
+    df['News Content'] = df['News Content'].apply(
+        lambda x: str(x)[:max_length] + "..." if len(str(x)) > max_length else str(x)
+    )
+
+    print(f"Trimmed articles longer than {max_length} characters\n")
+
+    return df
+
 def log_gpu_memory():
     """Log GPU memory usage for all available XPU devices"""
     if hasattr(torch, 'xpu') and torch.xpu.is_available():
@@ -76,6 +101,12 @@ def format_chat(row, few_shot_examples=None):
     task_desc_si = "ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත සිංහල පුවත් ලිපිය සඳහා සංක්ෂිප්ත හා තොරතුරුදායක සිරස්තලයක් ජනනය කරන්න. සිරස්තලය කෙටි, ආකර්ෂණීය ආකාරයෙන් ලිපියේ ප්‍රධාන කරුණ ග්‍රහණය කර ගත යුතුය."
     action_desc_si = "'Headline:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිරස්තලය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
+    # Trim the news content to avoid memory issues
+    MAX_CONTENT_LENGTH = 2500  # characters
+    news_content = str(row['News Content'])
+    if len(news_content) > MAX_CONTENT_LENGTH:
+        news_content = news_content[:MAX_CONTENT_LENGTH] + "..."
+
     # Build few-shot examples string if provided
     examples_str = ""
     if few_shot_examples:
@@ -87,22 +118,22 @@ def format_chat(row, few_shot_examples=None):
             examples_str += f"Headline: {example['headline']}\n"
 
     if QUERY_TYPE == "zero-shot":
-        return [{"role": "user", "content": f"{task_desc} {action_desc} News Content: {row['News Content']}"}]
+        return [{"role": "user", "content": f"{task_desc} {action_desc} News Content: {news_content}"}]
 
     elif QUERY_TYPE == "zero-shot-si":
-        return [{"role": "user", "content": f"{task_desc_si} {action_desc_si} News Content: {row['News Content']}"}]
+        return [{"role": "user", "content": f"{task_desc_si} {action_desc_si} News Content: {news_content}"}]
 
     elif QUERY_TYPE == "few-shot":
-        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow generate a headline for this news article:\nNews Content: {row['News Content']}"
+        prompt = f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow generate a headline for this news article:\nNews Content: {news_content}"
         return [{"role": "user", "content": prompt}]
 
     elif QUERY_TYPE == "few-shot-si":
-        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පුවත් ලිපිය සඳහා සිරස්තලයක් ජනනය කරන්න:\nNews Content: {row['News Content']}"
+        prompt = f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පුවත් ලිපිය සඳහා සිරස්තලයක් ජනනය කරන්න:\nNews Content: {news_content}"
         return [{"role": "user", "content": prompt}]
 
     else:
         # Default fallback
-        return [{"role": "user", "content": f"{task_desc} {action_desc} News Content: {row['News Content']}"}]
+        return [{"role": "user", "content": f"{task_desc} {action_desc} News Content: {news_content}"}]
 
 
 def query(pipe, inputs):
@@ -192,6 +223,9 @@ def predict(pipe_lm, model_id):
     test_size = min(1000, len(test_df))
     df = test_df.head(test_size).copy()
     print(f"Using {len(df)} test samples")
+
+    # Analyze and trim long articles
+    df = analyze_and_trim_dataset(df, max_length=2500)
 
     # Get few-shot examples if using few-shot learning
     if QUERY_TYPE in ["few-shot", "few-shot-si"]:
