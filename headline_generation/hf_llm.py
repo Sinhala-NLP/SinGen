@@ -434,7 +434,8 @@ if __name__ == '__main__':
         top_p=1.0,
     )
 
-    pipe_lm.model = ipex.optimize(pipe_lm.model, dtype=torch.bfloat16)
-    print("Model loaded successfully!")
+    # pipe_lm.model = ipex.optimize(pipe_lm.model, dtype=torch.bfloat16)
+    print("Model loaded successfully (IPEX optimization skipped for multi-GPU setup)!")
+
 
     predictions, rouge_results = predict(pipe_lm, model_id)
