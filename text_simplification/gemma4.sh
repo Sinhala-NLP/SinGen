@@ -20,7 +20,7 @@ for qt in zero-shot zero-shot-si few-shot few-shot-si; do
         --model_id google/gemma-4-31B-it \
         --query_type "$qt" \
         --batch_size 8 \
-        --max_new_tokens 256
+        --max_new_tokens 512
 done
 
 
