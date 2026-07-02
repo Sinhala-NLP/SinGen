@@ -9,14 +9,11 @@ import pandas as pd
 import torch
 from datasets import Dataset, load_dataset
 from tqdm.auto import tqdm
-from transformers import AutoProcessor, set_seed
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
 
-# Qwen3.6 is multimodal; its card loads it with AutoModelForMultimodalLM.
-# Fall back to AutoModelForImageTextToText on older transformers.
-try:
-    from transformers import AutoModelForMultimodalLM as _AutoModel
-except ImportError:
-    from transformers import AutoModelForImageTextToText as _AutoModel
+# Text-only variant: Qwen2 / Qwen2.5 (and Llama, Gemma-3-1B, etc.) are text-only
+# causal LMs. No processor, no vision tower, no thinking mode. The <think>
+# stripping below is a harmless no-op for these models.
 
 # Validated SARI (whitespace-tokenized, Sinhala-safe). Reused unchanged.
 from sari_metric import sari_sentence
@@ -210,7 +207,7 @@ if __name__ == '__main__':
     model_id = args.model_id
     print(f"Model: {model_id}\nQuery type: {QUERY_TYPE}\nDecoding: {'sampling' if args.do_sample else 'greedy'}")
 
-    processor = AutoTokenizer.from_pretrained(model_id)
+    processor = AutoTokenizer.from_pretrained(model_id)   # passed as "processor"; generate() handles a bare tokenizer
     model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto", device_map="auto")
     model.eval()
 
