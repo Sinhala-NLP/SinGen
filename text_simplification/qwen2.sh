@@ -15,13 +15,17 @@ source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_TOKEN=
 
-for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B Qwen/Qwen3.5-35B-A3B; do
+for model in \
+    Qwen/Qwen2.5-0.5B-Instruct Qwen/Qwen2.5-1.5B-Instruct Qwen/Qwen2.5-3B-Instruct \
+    Qwen/Qwen2.5-7B-Instruct Qwen/Qwen2.5-14B-Instruct Qwen/Qwen2.5-32B-Instruct Qwen/Qwen2.5-72B-Instruct \
+    Qwen/Qwen2-0.5B-Instruct Qwen/Qwen2-1.5B-Instruct Qwen/Qwen2-7B-Instruct \
+    Qwen/Qwen2-57B-A14B-Instruct Qwen/Qwen2-72B-Instruct; do
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
         python -m qwen2 \
             --model_id "$model" \
             --query_type "$qt" \
             --batch_size 8 \
-            --max_new_tokens 512
+            --max_new_tokens 128
     done
 done
 
