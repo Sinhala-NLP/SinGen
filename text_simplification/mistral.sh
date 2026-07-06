@@ -15,6 +15,9 @@ source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_TOKEN=
 
+pip install --upgrade "git+https://github.com/huggingface/transformers"
+pip install --upgrade "mistral-common>=1.8.6"
+
 for model in mistralai/Ministral-3-14B-Instruct-2512 mistralai/Ministral-3-8B-Instruct-2512 mistralai/Ministral-3-3B-Instruct-2512; do
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
         python -m mistral --model_id "$model" --query_type "$qt" --batch_size 8 --max_new_tokens 128
