@@ -15,13 +15,9 @@ source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_TOKEN=
 
-for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B Qwen/Qwen3.5-35B-A3B; do
+for model in mistralai/Ministral-3-14B-Instruct-2512 mistralai/Ministral-3-8B-Instruct-2512 mistralai/Ministral-3-3B-Instruct-2512; do
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
-        python -m evaluate_simplification_qwen \
-            --model_id "$model" \
-            --query_type "$qt" \
-            --batch_size 8 \
-            --max_new_tokens 512
+        python -m mistral --model_id "$model" --query_type "$qt" --batch_size 8 --max_new_tokens 128
     done
 done
 
