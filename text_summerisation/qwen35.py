@@ -10,6 +10,7 @@ import torch
 from datasets import load_dataset
 from tqdm.auto import tqdm
 from transformers import AutoProcessor, set_seed
+from xlsum_loader import load_xlsum_sinhala
 
 # Qwen3.5 is multimodal; load with AutoModelForMultimodalLM (fallback to
 # AutoModelForImageTextToText on older transformers).
@@ -140,13 +141,8 @@ def predict(model, processor, model_id, batch_size, max_new_tokens, do_sample, t
     # datasets>=4.0 removed trust_remote_code / script-based datasets, and XL-Sum
     # ships a loader script. Try the auto-converted Parquet branch first (works on
     # datasets 4.x), fall back to the script path on older datasets (<4).
-    try:
-        ds = load_dataset("csebuetnlp/xlsum", "sinhala", revision="refs/convert/parquet")
-    except Exception as e:
-        print(f"Parquet-branch load failed ({e}); trying legacy script load...")
-        ds = load_dataset("csebuetnlp/xlsum", "sinhala", trust_remote_code=True)
-    train_df = ds["train"].to_pandas()
-    test_df = ds["test"].to_pandas()
+    print("Loading XL-Sum Sinhala dataset (direct archive read)...")
+    train_df, _, test_df = load_xlsum_sinhala()
     print(f"Train: {len(train_df)}  Test: {len(test_df)}")
 
     df = test_df.copy()
