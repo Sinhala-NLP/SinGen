@@ -215,35 +215,43 @@ def to_processor_messages(messages):
 # Generation
 # ---------------------------------------------------------------------------
 
-def query(model, proc, is_processor, is_gemma4, messages_list, max_new_tokens=200):
+def query(model, proc, is_processor, is_gemma4, messages_list, max_new_tokens=200, batch_size=8):
     """
-    Runs greedy decoding per instance. Returns list of decoded strings with any
-    reasoning blocks stripped.
+    Runs greedy decoding in batches. Returns list of decoded strings with any
+    reasoning blocks stripped. Uses left padding so new tokens start at the same
+    offset for every sequence in a batch.
     """
     tok = get_tokenizer(proc, is_processor)
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "left"
+
     terminators = build_terminators(proc, is_processor)
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
 
     assistant_outputs = []
 
-    for messages in tqdm(messages_list, desc="Generating"):
-        msgs = to_processor_messages(messages) if is_processor else messages
+    for start in tqdm(range(0, len(messages_list), batch_size), desc="Generating"):
+        batch = messages_list[start:start + batch_size]
+        if is_processor:
+            batch = [to_processor_messages(m) for m in batch]
 
         template_kwargs = dict(
             add_generation_prompt=True,
             tokenize=True,
             return_dict=True,
             return_tensors="pt",
+            padding=True,
         )
 
         # Disable thinking on Gemma-4; older templates don't accept the kwarg.
         if is_gemma4:
             try:
-                inputs = proc.apply_chat_template(msgs, enable_thinking=False, **template_kwargs)
+                inputs = proc.apply_chat_template(batch, enable_thinking=False, **template_kwargs)
             except TypeError:
-                inputs = proc.apply_chat_template(msgs, **template_kwargs)
+                inputs = proc.apply_chat_template(batch, **template_kwargs)
         else:
-            inputs = proc.apply_chat_template(msgs, **template_kwargs)
+            inputs = proc.apply_chat_template(batch, **template_kwargs)
 
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         input_len = inputs["input_ids"].shape[-1]
@@ -257,9 +265,9 @@ def query(model, proc, is_processor, is_gemma4, messages_list, max_new_tokens=20
                 pad_token_id=pad_id,
             )
 
-        new_tokens = generated[0][input_len:]
-        text = tok.decode(new_tokens, skip_special_tokens=True)
-        assistant_outputs.append(strip_reasoning(text, is_gemma4))
+        new_tokens = generated[:, input_len:]
+        decoded = tok.batch_decode(new_tokens, skip_special_tokens=True)
+        assistant_outputs.extend(strip_reasoning(t, is_gemma4) for t in decoded)
 
     return assistant_outputs
 
@@ -415,7 +423,8 @@ def evaluate_bleu_scores(df):
 # Prediction driver
 # ---------------------------------------------------------------------------
 
-def predict(model, proc, is_processor, is_gemma4, dev_df, devtest_df):
+def predict(model, proc, is_processor, is_gemma4, dev_df, devtest_df,
+            max_new_tokens=200, batch_size=8):
     print(f"Dev set size: {len(dev_df)}")
     print(f"Devtest set size: {len(devtest_df)}")
     print(f"Columns: {devtest_df.columns.tolist()}")
@@ -440,7 +449,8 @@ def predict(model, proc, is_processor, is_gemma4, dev_df, devtest_df):
         df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
 
     print("Generating translations...")
-    responses = query(model, proc, is_processor, is_gemma4, df['chat'].tolist())
+    responses = query(model, proc, is_processor, is_gemma4, df['chat'].tolist(),
+                      max_new_tokens=max_new_tokens, batch_size=batch_size)
     df['responses'] = responses
 
     print("Extracting translations...")
@@ -464,6 +474,8 @@ def predict(model, proc, is_processor, is_gemma4, dev_df, devtest_df):
         f.write(f"Query Type: {QUERY_TYPE}\n")
         f.write("Dataset: FLORES-200 English-Sinhala (devtest split)\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        f.write(f"Max New Tokens: {max_new_tokens}\n")
+        f.write(f"Batch Size: {batch_size}\n")
         if QUERY_TYPE in ["few-shot", "few-shot-si"]:
             f.write("Few-shot approach: Dynamic (unique examples per test instance from dev set)\n")
         f.write("=" * 70 + "\n\n")
@@ -487,14 +499,22 @@ if __name__ == '__main__':
                         help='HF model id (Gemma-4 or any Gemma-3 checkpoint; loader auto-detects type)')
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
                         help='zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--batch_size', type=int, default=8, required=False,
+                        help='Number of prompts decoded per generation call')
+    parser.add_argument('--max_new_tokens', type=int, default=200, required=False,
+                        help='Max new tokens to generate per instance')
 
     args = parser.parse_args()
 
     MODEL_ID = args.model_id
     QUERY_TYPE = args.query_type
+    BATCH_SIZE = args.batch_size
+    MAX_NEW_TOKENS = args.max_new_tokens
 
     print(f"Model: {MODEL_ID}")
     print(f"Query type: {QUERY_TYPE}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Max new tokens: {MAX_NEW_TOKENS}")
 
     model, proc, is_processor, is_gemma4 = load_model(MODEL_ID)
 
@@ -506,4 +526,7 @@ if __name__ == '__main__':
     OUTPUT_FOLDER = os.path.join("outputs", "english_sinhala_translation", MODEL_ID.split('/')[-1], QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    predictions, bleu_results = predict(model, proc, is_processor, is_gemma4, dev_df, devtest_df)
+    predictions, bleu_results = predict(
+        model, proc, is_processor, is_gemma4, dev_df, devtest_df,
+        max_new_tokens=MAX_NEW_TOKENS, batch_size=BATCH_SIZE,
+    )
