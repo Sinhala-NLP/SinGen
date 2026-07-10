@@ -16,7 +16,10 @@ from transformers import (
     set_seed,
 )
 from datasets import load_dataset
+import tarfile
+import urllib.request
 
+FLORES_URL = "https://dl.fbaipublicfiles.com/nllb/flores200_dataset.tar.gz"
 set_seed(777)
 
 
@@ -117,30 +120,60 @@ def strip_reasoning(text, is_gemma4):
 # Data loading (identical task logic to the Llama MT script)
 # ---------------------------------------------------------------------------
 
+
+def _ensure_flores200(cache_dir=None):
+    """Download + extract the FLORES-200 archive once; return the path to the
+    extracted `flores200_dataset` dir. Replaces the removed HF loading script
+    (datasets>=4.0 no longer runs flores200.py)."""
+    cache_dir = cache_dir or os.environ.get(
+        "FLORES200_CACHE",
+        os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache")), "flores200"),
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    extracted = os.path.join(cache_dir, "flores200_dataset")
+
+    # Treat as present only if the files we actually need exist.
+    sentinel = os.path.join(extracted, "devtest", "sin_Sinh.devtest")
+    if not os.path.exists(sentinel):
+        tarball = os.path.join(cache_dir, "flores200_dataset.tar.gz")
+        if not os.path.exists(tarball):
+            print(f"Downloading FLORES-200 from {FLORES_URL} ...")
+            urllib.request.urlretrieve(FLORES_URL, tarball)
+        print(f"Extracting {tarball} ...")
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(cache_dir, filter="data")  # filter= is py>=3.12
+    return extracted
+
+
+def _read_lines(path):
+    # Explicit utf-8 is important for Sinhala; the old script omitted it and
+    # broke on non-utf-8 default locales.
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f]
+
+
 def download_and_load_flores_en_si():
     """
-    Downloads and loads FLORES-200 English-Sinhala dataset.
-    Returns dev and devtest DataFrames.
+    Loads FLORES-200 English-Sinhala dev/devtest directly from the official
+    archive (no HF dataset script). Returns dev and devtest DataFrames with
+    columns 'english' and 'sinhala' — identical to the old
+    load_dataset(..., 'eng_Latn-sin_Sinh') path.
     """
     print("Loading FLORES-200 dataset for English-Sinhala...")
-
-    dataset = load_dataset("Muennighoff/flores200", "eng_Latn-sin_Sinh")
+    root = _ensure_flores200()
 
     splits = {}
-    for split_name in ['dev', 'devtest']:
-        if split_name in dataset:
-            print(f"\nProcessing {split_name} split...")
-            split_data = dataset[split_name]
-            df = pd.DataFrame({
-                'english': split_data['sentence_eng_Latn'],
-                'sinhala': split_data['sentence_sin_Sinh']
-            })
-            splits[split_name] = df
-            print(f"{split_name.capitalize()} split size: {len(df)}")
-        else:
-            print(f"Warning: {split_name} split not found in dataset")
+    for split_name in ["dev", "devtest"]:
+        eng = _read_lines(os.path.join(root, split_name, f"eng_Latn.{split_name}"))
+        sin = _read_lines(os.path.join(root, split_name, f"sin_Sinh.{split_name}"))
+        assert len(eng) == len(sin), (
+            f"{split_name}: eng/sin line-count mismatch ({len(eng)} vs {len(sin)})"
+        )
+        df = pd.DataFrame({"english": eng, "sinhala": sin})
+        splits[split_name] = df
+        print(f"{split_name.capitalize()} split size: {len(df)}")
 
-    return splits.get('dev'), splits.get('devtest')
+    return splits.get("dev"), splits.get("devtest")
 
 
 def get_few_shot_examples_for_instance(dev_df, instance_idx, num_examples=3, seed=None):
