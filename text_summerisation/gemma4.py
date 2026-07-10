@@ -1,0 +1,225 @@
+import argparse
+import os
+import re
+import random
+from typing import List
+
+import numpy as np
+import pandas as pd
+import torch
+from datasets import load_dataset
+from tqdm.auto import tqdm
+from transformers import AutoProcessor, AutoModelForCausalLM, set_seed
+from xlsum_loader import load_xlsum_sinhala
+
+# Sinhala-safe ROUGE (whitespace-tokenized). Same module as the headline task,
+# so summarisation and headline ROUGE-L are directly comparable.
+from rouge_metric import score_corpus, ROUGE_TYPES
+
+set_seed(777)
+
+# NOTE: Gemma chat templates do not accept a `system` role, so (unlike the Qwen
+# summariser) there is no SYSTEM_MSG here. The "expert in Sinhala" framing is
+# already carried in task_desc / task_desc_si below.
+
+
+# --------------------------------------------------------------------------- #
+# Few-shot + prompting (task logic unchanged from the summarisation script)
+# --------------------------------------------------------------------------- #
+def get_few_shot_examples_for_instance(train_df, instance_idx, num_examples=3, seed=None):
+    if seed is not None:
+        random.seed(seed + instance_idx)
+    idxs = random.sample(range(len(train_df)), min(num_examples, len(train_df)))
+    out = []
+    for idx in idxs:
+        row = train_df.iloc[idx]
+        if (pd.notna(row['text']) and pd.notna(row['summary'])
+                and str(row['text']).strip() and str(row['summary']).strip()):
+            out.append({'text': str(row['text']), 'summary': str(row['summary'])})
+    return out
+
+
+def build_prompt(row, few_shot_examples=None):
+    task_desc = ("Imagine you are an expert in Sinhala language. Please provide a concise summary of the "
+                 "following Sinhala news article. The summary should capture the main ideas and key points "
+                 "while being significantly shorter than the original text.")
+    action_desc = "Return the summary only following the prefix 'Summary:' without any other text or explanations."
+    task_desc_si = ("ඔබ සිංහල භාෂාවේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත සිංහල පුවත් ලිපියේ සංක්ෂිප්ත සාරාංශයක් ලබා දෙන්න. "
+                    "සාරාංශය මුල් පාඨයට වඩා බෙහෙවින් කෙටි විය යුතු අතර ප්‍රධාන අදහස් සහ ප්‍රධාන කරුණු අන්තර්ගත විය යුතුය.")
+    action_desc_si = ("'Summary:' යන ප්‍රත්‍යයයයෙන් පසුව පමණක් සාරාංශය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් "
+                      "එක් නොකරන්න.")
+
+    examples_str = ""
+    if few_shot_examples:
+        for i, ex in enumerate(few_shot_examples, 1):
+            preview = ex['text'][:500] + "..." if len(ex['text']) > 500 else ex['text']
+            examples_str += f"\nExample {i}:\nText: {preview}\nSummary: {ex['summary']}\n"
+
+    if QUERY_TYPE == "zero-shot":
+        return f"{task_desc} {action_desc} Text: {row['text']}"
+    elif QUERY_TYPE == "zero-shot-si":
+        return f"{task_desc_si} {action_desc_si} Text: {row['text']}"
+    elif QUERY_TYPE == "few-shot":
+        return f"{task_desc}\n\n{action_desc}\n\nHere are some examples:{examples_str}\n\nNow summarize this text:\nText: {row['text']}"
+    elif QUERY_TYPE == "few-shot-si":
+        return f"{task_desc_si}\n\n{action_desc_si}\n\nමෙන්න උදාහරණ කිහිපයක්:{examples_str}\n\nදැන් මේ පාඨය සාරාංශ කරන්න:\nText: {row['text']}"
+    return f"{task_desc} {action_desc} Text: {row['text']}"
+
+
+def format_chat(row, few_shot_examples=None):
+    # Gemma: user-only turn (no system role).
+    return [{"role": "user", "content": build_prompt(row, few_shot_examples)}]
+
+
+# --------------------------------------------------------------------------- #
+# Output post-processing (Gemma-4 thinking-aware)
+# --------------------------------------------------------------------------- #
+# NOTE (verify for your transformers version): Gemma-4 31B emits a reasoning
+# "channel" even when thinking is disabled, e.g. <|channel>thought\n...<channel|>
+# before the final answer. We strip it so the reasoning never enters the
+# prediction. Tag spelling is taken from the model card; adjust the regex if a
+# newer template changes it.
+_THINK_BLOCK = re.compile(r'<\|?\s*channel\s*\|?>\s*thought.*?<\|?\s*/?\s*channel\s*\|?>', re.DOTALL | re.IGNORECASE)
+_STRAY_TAGS = re.compile(r'<\|?\s*/?\s*(?:channel|think)\s*\|?>', re.IGNORECASE)
+
+
+def strip_thinking(text: str) -> str:
+    text = _THINK_BLOCK.sub('', text)
+    text = _STRAY_TAGS.sub('', text)
+    return text.strip()
+
+
+def extract_summary(response: str):
+    if not isinstance(response, str):
+        return "", False
+    text = strip_thinking(response)
+    m = re.search(r'Summary:\s*(.*)', text, re.IGNORECASE | re.DOTALL)
+    if m:
+        cand = m.group(1).strip().split('\n\n')[0].strip()   # summaries may span lines; take first block
+        if cand:
+            return cand, True
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return (lines[-1] if lines else ""), False
+
+
+# --------------------------------------------------------------------------- #
+# Generation (AutoProcessor + AutoModelForCausalLM, batched, left-padded)
+# --------------------------------------------------------------------------- #
+def generate(model, processor, list_of_messages: List[list], batch_size, max_new_tokens, do_sample) -> List[str]:
+    outputs = []
+    tok = processor.tokenizer if hasattr(processor, "tokenizer") else processor
+    tok.padding_side = "left"
+    if tok.pad_token_id is None:
+        tok.pad_token = tok.eos_token
+    # Greedy is the default (deterministic / reproducible); these sampling params
+    # are only used with --do_sample and are generic, not model-tuned.
+    sample_kwargs = dict(temperature=0.7, top_p=0.90) if do_sample else {}
+
+    for start in tqdm(range(0, len(list_of_messages), batch_size), desc="Generating summaries"):
+        batch = list_of_messages[start:start + batch_size]
+        # Try to disable Gemma-4 thinking via the chat template; fall back if the
+        # installed template does not support the kwarg.
+        try:
+            inputs = processor.apply_chat_template(
+                batch, add_generation_prompt=True, tokenize=True,
+                padding=True, return_tensors="pt", return_dict=True, enable_thinking=False)
+        except TypeError:
+            inputs = processor.apply_chat_template(
+                batch, add_generation_prompt=True, tokenize=True,
+                padding=True, return_tensors="pt", return_dict=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.no_grad():
+            gen = model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                 do_sample=do_sample, pad_token_id=tok.pad_token_id, **sample_kwargs)
+        outputs.extend(tok.batch_decode(gen[:, input_len:], skip_special_tokens=True))
+    return outputs
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline
+# --------------------------------------------------------------------------- #
+def predict(model, processor, model_id, batch_size, max_new_tokens, do_sample, test_size):
+    # datasets>=4.0 removed script-based loading; the Parquet-branch fallback also
+    # fails for this repo (the conversion pipeline never ran). Correct fix is a
+    # direct hf_hub_download of the .tar.bz2 archive, handled inside the loader.
+    print("Loading XL-Sum Sinhala dataset (direct archive read)...")
+    train_df, _, test_df = load_xlsum_sinhala()
+    print(f"Train: {len(train_df)}  Test: {len(test_df)}")
+
+    df = test_df.copy()
+    if test_size and test_size > 0:
+        # NOTE: the full official XL-Sum Sinhala test split is 500 instances, so
+        # --test_size 500 is a no-op (not a subsample). Table 1 lists |Test|=500.
+        df = df.head(test_size).copy()
+    print(f"Using {len(df)} test samples")
+
+    if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        msgs = []
+        for idx, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
+            fs = get_few_shot_examples_for_instance(train_df, instance_idx=idx, num_examples=3, seed=42)
+            msgs.append(format_chat(row, fs))
+        df['chat'] = msgs
+    else:
+        df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
+
+    responses = generate(model, processor, df['chat'].tolist(), batch_size, max_new_tokens, do_sample)
+    df['responses'] = responses
+
+    preds, matched = zip(*[extract_summary(r) for r in responses])
+    df['preds'] = list(preds)
+    df['marker_matched'] = list(matched)
+
+    n_miss = int((~df['marker_matched']).sum())
+    n_empty = int((df['preds'].str.len() == 0).sum())
+    print(f"\nFormat misses (no 'Summary:' marker): {n_miss}/{len(df)}")
+    print(f"Empty predictions: {n_empty}/{len(df)}  <-- check for truncated/looping thinking if high")
+
+    df.to_csv(os.path.join(OUTPUT_FOLDER, "predictions.csv"), index=False, encoding='utf-8')
+
+    print("Evaluating with ROUGE (Sinhala-safe, whitespace tokenized)...")
+    rouge = score_corpus(df['summary'].tolist(), df['preds'].tolist())
+    df.to_csv(os.path.join(OUTPUT_FOLDER, "predictions_with_rouge.csv"), index=False, encoding='utf-8')
+
+    print("\n" + "=" * 60 + "\nROUGE F1 (x100)\n" + "=" * 60)
+    for t in ROUGE_TYPES:
+        print(f"{t:8s} mean={rouge[t]['mean']:.4f}  median={rouge[t]['median']:.4f}  std={rouge[t]['std']:.4f}")
+    print("=" * 60)
+
+    with open(os.path.join(OUTPUT_FOLDER, "rouge_summary.txt"), 'w', encoding='utf-8') as f:
+        f.write(f"Model: {model_id}\nQuery type: {QUERY_TYPE}\nDataset: XL-Sum (sinhala)\n")
+        f.write(f"Samples: {len(df)}\nDecoding: {'sampling(t=0.7,p=0.9)' if do_sample else 'greedy'}\n")
+        f.write(f"Format misses: {n_miss}/{len(df)}  Empty preds: {n_empty}/{len(df)}\n")
+        f.write("Metric: ROUGE F1 x100, whitespace-tokenized (Sinhala-safe)\n" + "=" * 60 + "\n")
+        for t in ROUGE_TYPES:
+            r = rouge[t]
+            f.write(f"{t}:\n  Mean: {r['mean']:.4f}\n  Std: {r['std']:.4f}\n  Median: {r['median']:.4f}\n"
+                    f"  Min: {r['min']:.4f}\n  Max: {r['max']:.4f}\n")
+
+    return df['preds'].tolist(), rouge
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_id', type=str, default='google/gemma-4-31B-it')
+    parser.add_argument('--query_type', type=str, default='zero-shot',
+                        help='zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--max_new_tokens', type=int, default=512)
+    parser.add_argument('--test_size', type=int, default=0, help='0 = full test set; else cap (Table 1 uses 500)')
+    parser.add_argument('--do_sample', action='store_true', help='sampling (t=0.7,p=0.9) instead of greedy')
+    args = parser.parse_args()
+
+    QUERY_TYPE = args.query_type
+    model_id = args.model_id
+    print(f"Model: {model_id}\nQuery type: {QUERY_TYPE}\nDecoding: {'sampling' if args.do_sample else 'greedy'}")
+
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto", device_map="auto")
+    model.eval()
+
+    OUTPUT_FOLDER = os.path.join("outputs", "text_summarisation", model_id.split('/')[-1], QUERY_TYPE)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    predict(model, processor, model_id, args.batch_size, args.max_new_tokens, args.do_sample, args.test_size)
