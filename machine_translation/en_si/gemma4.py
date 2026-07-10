@@ -91,15 +91,6 @@ def build_terminators(proc, is_processor):
     return terminators
 
 
-# ---------------------------------------------------------------------------
-# Reasoning / thinking-tag stripping
-# ---------------------------------------------------------------------------
-# Gemma-4 can emit channel-delimited thought blocks. We request no thinking via
-# enable_thinking=False in the chat template, and strip any residual blocks as a
-# safety net. Adjust the delimiters here if the checkpoint uses different token
-# strings.
-# ---------------------------------------------------------------------------
-
 _THINK_PATTERNS = [
     re.compile(r"<\|channel\|>\s*thought.*?(?=<\|channel\|>|<\|message\|>|\Z)", re.DOTALL | re.IGNORECASE),
     re.compile(r"<\|channel\|>.*?<\|message\|>", re.DOTALL),
