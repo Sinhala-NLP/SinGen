@@ -61,30 +61,35 @@ def build_user_content(complex_text: str, prompt_lang: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Chat-template helper (thinking disabled on both training targets and prompts)
+# Chat-template helpers  (render to string, then tokenize -> always a flat
+# list of ints; avoids BatchEncoding/dict returns from apply_chat_template)
 # --------------------------------------------------------------------------- #
-def apply_template(tok, messages, add_generation_prompt: bool) -> List[int]:
+def render_chat(tok, messages, add_generation_prompt: bool) -> str:
     try:
         return tok.apply_chat_template(
-            messages, tokenize=True,
+            messages, tokenize=False,
             add_generation_prompt=add_generation_prompt,
             enable_thinking=False)
     except TypeError:
         return tok.apply_chat_template(
-            messages, tokenize=True,
+            messages, tokenize=False,
             add_generation_prompt=add_generation_prompt)
 
 
-def build_training_example(tok, user_content: str, simple: str, max_len: int) -> Dict[str, List[int]]:
-    """Tokenise a full user->assistant turn and mask the prompt so loss is only
-    on the response (including the closing <|im_end|>, so the model learns to stop)."""
+def build_training_example(tok, user_content: str, simple: str, max_len: int):
+    """Render user->assistant turn to text, tokenise, and mask the prompt so
+    loss is only on the response (incl. the closing <|im_end|>)."""
     prompt_msgs = [{"role": "user", "content": user_content}]
     full_msgs = prompt_msgs + [{"role": "assistant", "content": f"{TARGET_PREFIX} {simple}"}]
 
-    prompt_ids = apply_template(tok, prompt_msgs, add_generation_prompt=True)
-    full_ids = apply_template(tok, full_msgs, add_generation_prompt=False)
+    prompt_text = render_chat(tok, prompt_msgs, add_generation_prompt=True)
+    full_text = render_chat(tok, full_msgs, add_generation_prompt=False)
 
-    # prompt_ids should be a strict prefix of full_ids for the Qwen template.
+    # tokenise the rendered strings (template already added special tokens)
+    prompt_ids = tok(prompt_text, add_special_tokens=False)["input_ids"]
+    full_ids = tok(full_text, add_special_tokens=False)["input_ids"]
+
+    # prompt should be a token-prefix of full; fall back to longest common prefix
     n = len(prompt_ids)
     if full_ids[:n] != prompt_ids:
         n = 0
