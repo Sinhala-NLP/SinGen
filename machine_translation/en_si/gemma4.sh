@@ -14,6 +14,7 @@ module add cuda/12.0
 source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_TOKEN=
+pip install "peft>=0.11" "accelerate>=0.30"
 
 for model in google/gemma-4-31B-it google/gemma-4-12B-it; do
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
