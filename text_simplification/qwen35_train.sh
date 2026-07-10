@@ -25,7 +25,7 @@ export TMPDIR=/scratch/hpc/37/ranasint/tmp
 # checkpoints over both H200s, so launch with plain `python` (no torchrun).
 for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B Qwen/Qwen3.5-35B-A3B; do
     for lang in en si; do
-        python -m train_simplification_qwen \
+        python -m qwen35_train \
             --model_id "$model" \
             --prompt_lang "$lang" \
             --num_train_epochs 3 \
