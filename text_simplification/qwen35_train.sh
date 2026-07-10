@@ -19,6 +19,8 @@ export HF_TOKEN=
 export PIP_CACHE_DIR=/scratch/hpc/37/ranasint/pip_cache
 export TMPDIR=/scratch/hpc/37/ranasint/tmp
 
+pip install "peft>=0.11" "accelerate>=0.30"
+
 # Each run: LoRA instruction-fine-tune on the ~800 SiTSE train instances, then
 # evaluate on the 200 held-out test instances. Loop over model sizes x prompt
 # language (English / Sinhala instruction). device_map="auto" spreads the large
