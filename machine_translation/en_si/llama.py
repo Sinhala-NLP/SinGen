@@ -1,95 +1,105 @@
 import argparse
 import os
 import re
-from typing import List
 import random
+from typing import List
 
 import numpy as np
 import pandas as pd
 import torch
 from tqdm.auto import tqdm
-from transformers import pipeline, set_seed
-from datasets import load_dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed
+import tarfile
+import urllib.request
 
+FLORES_URL = "https://dl.fbaipublicfiles.com/nllb/flores200_dataset.tar.gz"
 set_seed(777)
 
-model_id = "meta-llama.sh/Llama-3.3-70B-Instruct"
 
-print(model_id)
+# ---------------------------------------------------------------------------
+# Data loading (identical to the Gemma MT script)
+# ---------------------------------------------------------------------------
 
-pipe_lm = pipeline(
-    "text-generation",
-    model=model_id,
-    model_kwargs={"torch_dtype": torch.bfloat16},
-    device_map="auto",
-    do_sample=False,
-    top_p=1.0,
-)
+def _ensure_flores200(cache_dir=None):
+    """Download + extract the FLORES-200 archive once; return the path to the
+    extracted `flores200_dataset` dir. Replaces the removed HF loading script
+    (datasets>=4.0 no longer runs flores200.py)."""
+    cache_dir = cache_dir or os.environ.get(
+        "FLORES200_CACHE",
+        os.path.join(os.environ.get("HF_HOME", os.path.expanduser("~/.cache")), "flores200"),
+    )
+    os.makedirs(cache_dir, exist_ok=True)
+    extracted = os.path.join(cache_dir, "flores200_dataset")
+
+    # Treat as present only if the files we actually need exist.
+    sentinel = os.path.join(extracted, "devtest", "sin_Sinh.devtest")
+    if not os.path.exists(sentinel):
+        tarball = os.path.join(cache_dir, "flores200_dataset.tar.gz")
+        if not os.path.exists(tarball):
+            print(f"Downloading FLORES-200 from {FLORES_URL} ...")
+            urllib.request.urlretrieve(FLORES_URL, tarball)
+        print(f"Extracting {tarball} ...")
+        with tarfile.open(tarball, "r:gz") as tar:
+            tar.extractall(cache_dir, filter="data")  # filter= is py>=3.12
+    return extracted
+
+
+def _read_lines(path):
+    # Explicit utf-8 is important for Sinhala.
+    with open(path, "r", encoding="utf-8") as f:
+        return [line.rstrip("\n") for line in f]
 
 
 def download_and_load_flores_en_si():
     """
-    Downloads and loads FLORES-200 English-Sinhala dataset.
-    Returns dev and devtest DataFrames.
+    Loads FLORES-200 English-Sinhala dev/devtest directly from the official
+    archive (no HF dataset script). Returns dev and devtest DataFrames with
+    columns 'english' and 'sinhala'.
     """
     print("Loading FLORES-200 dataset for English-Sinhala...")
+    root = _ensure_flores200()
 
-    # Load the dataset - FLORES-200 from Muennighoff
-    # Use hyphenated format for language pairs
-    dataset = load_dataset("Muennighoff/flores200", "eng_Latn-sin_Sinh")
-
-    # Process dev and devtest splits
     splits = {}
-    for split_name in ['dev', 'devtest']:
-        if split_name in dataset:
-            print(f"\nProcessing {split_name} split...")
-            split_data = dataset[split_name]
+    for split_name in ["dev", "devtest"]:
+        eng = _read_lines(os.path.join(root, split_name, f"eng_Latn.{split_name}"))
+        sin = _read_lines(os.path.join(root, split_name, f"sin_Sinh.{split_name}"))
+        assert len(eng) == len(sin), (
+            f"{split_name}: eng/sin line-count mismatch ({len(eng)} vs {len(sin)})"
+        )
+        df = pd.DataFrame({"english": eng, "sinhala": sin})
+        splits[split_name] = df
+        print(f"{split_name.capitalize()} split size: {len(df)}")
 
-            # Convert to pandas DataFrame
-            # FLORES-200 has 'sentence_eng_Latn' and 'sentence_sin_Sinh' columns
-            df = pd.DataFrame({
-                'english': split_data['sentence_eng_Latn'],
-                'sinhala': split_data['sentence_sin_Sinh']
-            })
-
-            splits[split_name] = df
-            print(f"{split_name.capitalize()} split size: {len(df)}")
-        else:
-            print(f"Warning: {split_name} split not found in dataset")
-
-    return splits.get('dev'), splits.get('devtest')
+    return splits.get("dev"), splits.get("devtest")
 
 
 def get_few_shot_examples_for_instance(dev_df, instance_idx, num_examples=3, seed=None):
     """
-    Get random few-shot examples for a specific test instance from dev set
-    Each test instance will get different randomly selected examples
+    Get random few-shot examples for a specific test instance from dev set.
+    Each test instance gets a different randomly selected set.
     """
-    # Use instance-specific seed for randomization
     if seed is not None:
         random.seed(seed + instance_idx)
 
-    # Get available examples from dev set
     available_indices = list(dev_df.index)
-
-    # Randomly sample few-shot examples for this specific instance
     few_shot_indices = random.sample(available_indices, min(num_examples, len(available_indices)))
 
     few_shot_examples = []
     for idx in few_shot_indices:
         row = dev_df.loc[idx]
-
-        # Check if both English and Sinhala are available
         if pd.notna(row['english']) and pd.notna(row['sinhala']) and \
                 str(row['english']).strip() and str(row['sinhala']).strip():
-            example = {
+            few_shot_examples.append({
                 'english': str(row['english']),
                 'sinhala': str(row['sinhala'])
-            }
-            few_shot_examples.append(example)
+            })
 
     return few_shot_examples
 
+
+# ---------------------------------------------------------------------------
+# Prompting (identical wording to the Gemma MT script for BLEU comparability)
+# ---------------------------------------------------------------------------
 
 def format_chat(row, few_shot_examples=None):
     task_desc = "You are an expert translator specializing in English to Sinhala translation. Translate the following English sentence (E) into Sinhala accurately while preserving the meaning and context."
@@ -98,7 +108,6 @@ def format_chat(row, few_shot_examples=None):
     task_desc_si = "ඔබ ඉංග්‍රීසි සිට සිංහල භාෂා පරිවර්තනයේ ප්‍රවීණයෙකු ලෙස උපකල්පනය කරන්න. පහත ඉංග්‍රීසි වාක්‍යය (E) අර්ථය සහ සන්දර්භය ආරක්ෂා කරමින් නිවැරදිව සිංහලයට පරිවර්තනය කරන්න."
     action_desc_si = "'Translation:' යන ප්‍රත්‍යයයෙන් පසුව පමණක් සිංහල පරිවර්තනය ලබා දෙන්න. වෙනත් කිසිදු උපසර්ගයක් හෝ විස්තරයක් එක් නොකරන්න."
 
-    # Build few-shot examples string if provided
     examples_str = ""
     if few_shot_examples:
         for i, example in enumerate(few_shot_examples, 1):
@@ -121,87 +130,96 @@ def format_chat(row, few_shot_examples=None):
         return [{"role": "user", "content": prompt}]
 
     else:
-        # Default fallback
         return [{"role": "user", "content": f"{task_desc} {action_desc} E: {row['english']}"}]
 
 
-def query(pipe, inputs):
+# ---------------------------------------------------------------------------
+# Generation (text-only causal LM, Llama-3 <|eot_id|> terminator)
+# ---------------------------------------------------------------------------
+
+def build_terminators(tok):
+    terminators = []
+    if tok.eos_token_id is not None:
+        terminators.append(tok.eos_token_id)
+    # Llama 3 ends a turn with <|eot_id|>, which differs from the default EOS.
+    eot = tok.convert_tokens_to_ids("<|eot_id|>")
+    if eot is not None and eot != tok.unk_token_id and eot not in terminators:
+        terminators.append(eot)
+    return terminators or None
+
+
+def query(model, tokenizer, messages_list: List[list], max_new_tokens=200,
+          batch_size=8, do_sample=False) -> List[str]:
     """
-    :param pipe: text-generation pipeline
-    :param inputs: list of messages
-    :return: list
+    Runs decoding in batches. Uses left padding so new tokens start at the same
+    offset for every sequence in a batch.
     """
-    assistant_outputs = []
+    tokenizer.padding_side = "left"
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    terminators = build_terminators(tokenizer)
+    sample_kwargs = dict(temperature=0.6, top_p=0.9) if do_sample else {}  # Llama defaults
 
-    terminators = [
-        pipe.tokenizer.eos_token_id,
-        pipe.tokenizer.convert_tokens_to_ids("<|eot_id|>")
-    ]
+    outputs = []
+    for start in tqdm(range(0, len(messages_list), batch_size), desc="Generating"):
+        batch = messages_list[start:start + batch_size]
+        inputs = tokenizer.apply_chat_template(
+            batch, add_generation_prompt=True, tokenize=True,
+            padding=True, return_tensors="pt", return_dict=True)
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        input_len = inputs["input_ids"].shape[1]
 
-    for out in tqdm(pipe(
-            inputs,
-            max_new_tokens=200,
-            eos_token_id=terminators,
-            pad_token_id=pipe.tokenizer.eos_token_id
-    )):
-        assistant_outputs.append(out[0]["generated_text"][-1]['content'].strip())
-
-    return assistant_outputs
+        with torch.no_grad():
+            gen = model.generate(**inputs, max_new_tokens=max_new_tokens,
+                                 do_sample=do_sample, eos_token_id=terminators,
+                                 pad_token_id=tokenizer.pad_token_id, **sample_kwargs)
+        outputs.extend(tokenizer.batch_decode(gen[:, input_len:], skip_special_tokens=True))
+    return outputs
 
 
 def extract_translation(response):
-    """Extract translation from model response"""
+    """Extract translation from model response."""
     if not isinstance(response, str):
         print(f"Non-string response: {response}")
         return ""
 
     try:
-        # Look for the "Translation:" pattern
         matches = re.findall(r'Translation:\s*(.*?)(?:\n\n|\Z)', response, re.IGNORECASE | re.DOTALL)
         if matches:
             return matches[0].strip()
 
-        # Fallback: try without strict matching
         if "translation:" in response.lower():
             parts = response.lower().split("translation:")
             if len(parts) > 1:
                 return parts[1].strip()
 
-        # Last resort: return the response as is
         return response.strip()
     except Exception as e:
         print(f"Error extracting translation: {e}")
         return ""
 
 
-# BLEU Score Evaluation Functions
+# ---------------------------------------------------------------------------
+# BLEU (whitespace tokenization — required for Sinhala; identical to MT script)
+# ---------------------------------------------------------------------------
+
 def tokenize(text):
-    """Simple tokenization by splitting on whitespace"""
+    """Simple tokenization by splitting on whitespace."""
     if pd.isna(text) or text is None:
         return []
-    text = str(text).strip()
-    tokens = text.split()
-    return tokens
+    return str(text).strip().split()
 
 
 def calculate_bleu_score_individual(reference: str, prediction: str, max_n: int = 4):
     """
-    Calculate individual BLEU scores (BLEU-1, BLEU-2, BLEU-3, BLEU-4) and overall BLEU
-    Returns a dictionary with individual scores and the overall BLEU score
+    Calculate individual BLEU scores (BLEU-1..4) and overall BLEU.
     """
     ref_tokens = tokenize(reference)
     pred_tokens = tokenize(prediction)
 
     if not pred_tokens or not ref_tokens:
-        return {
-            'bleu_1': 0.0,
-            'bleu_2': 0.0,
-            'bleu_3': 0.0,
-            'bleu_4': 0.0,
-            'bleu_overall': 0.0
-        }
+        return {'bleu_1': 0.0, 'bleu_2': 0.0, 'bleu_3': 0.0, 'bleu_4': 0.0, 'bleu_overall': 0.0}
 
-    # Calculate brevity penalty
     ref_len = len(ref_tokens)
     pred_len = len(pred_tokens)
 
@@ -210,7 +228,6 @@ def calculate_bleu_score_individual(reference: str, prediction: str, max_n: int 
     else:
         bp = np.exp(1 - ref_len / pred_len) if pred_len > 0 else 0.0
 
-    # Calculate n-gram precisions
     precisions = []
     individual_bleu_scores = {}
 
@@ -218,17 +235,14 @@ def calculate_bleu_score_individual(reference: str, prediction: str, max_n: int 
         ref_ngrams = {}
         pred_ngrams = {}
 
-        # Count reference n-grams
         for i in range(len(ref_tokens) - n + 1):
             ngram = tuple(ref_tokens[i:i + n])
             ref_ngrams[ngram] = ref_ngrams.get(ngram, 0) + 1
 
-        # Count prediction n-grams
         for i in range(len(pred_tokens) - n + 1):
             ngram = tuple(pred_tokens[i:i + n])
             pred_ngrams[ngram] = pred_ngrams.get(ngram, 0) + 1
 
-        # Calculate clipped counts
         clipped_count = 0
         total_count = sum(pred_ngrams.values())
 
@@ -236,35 +250,24 @@ def calculate_bleu_score_individual(reference: str, prediction: str, max_n: int 
             if ngram in ref_ngrams:
                 clipped_count += min(count, ref_ngrams[ngram])
 
-        # Calculate precision for this n-gram order
         precision = clipped_count / total_count if total_count > 0 else 0.0
         precisions.append(precision)
-
-        # Calculate individual BLEU-n score (with brevity penalty)
         individual_bleu_scores[f'bleu_{n}'] = (bp * precision * 100) if precision > 0 else 0.0
 
-    # Calculate overall BLEU score (geometric mean of all precisions)
     if min(precisions) > 0:
         geo_mean = np.exp(np.mean([np.log(p) for p in precisions]))
     else:
         geo_mean = 0.0
 
     individual_bleu_scores['bleu_overall'] = bp * geo_mean * 100
-
     return individual_bleu_scores
 
 
 def evaluate_bleu_scores(df):
-    """
-    Calculate individual and overall BLEU scores for the translations dataframe
-    """
+    """Calculate individual and overall BLEU scores for the translations dataframe."""
     print("\nCalculating BLEU scores...")
 
-    bleu_1_scores = []
-    bleu_2_scores = []
-    bleu_3_scores = []
-    bleu_4_scores = []
-    bleu_overall_scores = []
+    bleu_1_scores, bleu_2_scores, bleu_3_scores, bleu_4_scores, bleu_overall_scores = [], [], [], [], []
 
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Computing BLEU"):
         reference = row['sinhala']
@@ -291,10 +294,9 @@ def evaluate_bleu_scores(df):
     df['bleu_4'] = bleu_4_scores
     df['bleu_overall'] = bleu_overall_scores
 
-    # Calculate statistics for each BLEU variant
-    print(f"\n" + "=" * 70)
-    print(f"BLEU Score Evaluation Results:")
-    print(f"=" * 70)
+    print("\n" + "=" * 70)
+    print("BLEU Score Evaluation Results:")
+    print("=" * 70)
 
     for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
         scores = df[score_type].tolist()
@@ -305,122 +307,84 @@ def evaluate_bleu_scores(df):
         print(f"  Min:    {np.min(scores):.4f}")
         print(f"  Max:    {np.max(scores):.4f}")
 
-    print(f"=" * 70)
+    print("=" * 70)
+
+    def stats(scores):
+        return {
+            'mean': np.mean(scores), 'median': np.median(scores), 'std': np.std(scores),
+            'min': np.min(scores), 'max': np.max(scores), 'scores': scores
+        }
 
     return {
-        'bleu_1': {
-            'mean': np.mean(bleu_1_scores),
-            'median': np.median(bleu_1_scores),
-            'std': np.std(bleu_1_scores),
-            'min': np.min(bleu_1_scores),
-            'max': np.max(bleu_1_scores),
-            'scores': bleu_1_scores
-        },
-        'bleu_2': {
-            'mean': np.mean(bleu_2_scores),
-            'median': np.median(bleu_2_scores),
-            'std': np.std(bleu_2_scores),
-            'min': np.min(bleu_2_scores),
-            'max': np.max(bleu_2_scores),
-            'scores': bleu_2_scores
-        },
-        'bleu_3': {
-            'mean': np.mean(bleu_3_scores),
-            'median': np.median(bleu_3_scores),
-            'std': np.std(bleu_3_scores),
-            'min': np.min(bleu_3_scores),
-            'max': np.max(bleu_3_scores),
-            'scores': bleu_3_scores
-        },
-        'bleu_4': {
-            'mean': np.mean(bleu_4_scores),
-            'median': np.median(bleu_4_scores),
-            'std': np.std(bleu_4_scores),
-            'min': np.min(bleu_4_scores),
-            'max': np.max(bleu_4_scores),
-            'scores': bleu_4_scores
-        },
-        'bleu_overall': {
-            'mean': np.mean(bleu_overall_scores),
-            'median': np.median(bleu_overall_scores),
-            'std': np.std(bleu_overall_scores),
-            'min': np.min(bleu_overall_scores),
-            'max': np.max(bleu_overall_scores),
-            'scores': bleu_overall_scores
-        }
+        'bleu_1': stats(bleu_1_scores),
+        'bleu_2': stats(bleu_2_scores),
+        'bleu_3': stats(bleu_3_scores),
+        'bleu_4': stats(bleu_4_scores),
+        'bleu_overall': stats(bleu_overall_scores),
     }
 
 
-def predict(dev_df, devtest_df):
-    """Main prediction function"""
+# ---------------------------------------------------------------------------
+# Prediction driver
+# ---------------------------------------------------------------------------
+
+def predict(model, tokenizer, dev_df, devtest_df,
+            max_new_tokens=200, batch_size=8, do_sample=False):
     print(f"Dev set size: {len(dev_df)}")
     print(f"Devtest set size: {len(devtest_df)}")
     print(f"Columns: {devtest_df.columns.tolist()}")
 
-    # Use the devtest set for testing
     df = devtest_df.copy()
 
-    # Get few-shot examples if using few-shot learning
     if QUERY_TYPE in ["few-shot", "few-shot-si"]:
         print("Getting dynamic few-shot examples for each test instance...")
         print(f"Dev set available for few-shot examples: {len(dev_df)}")
         print(f"Test instances (devtest): {len(df)}")
 
-        # Apply few-shot formatting with dynamic example selection per instance
         chat_messages = []
         for idx, (test_idx, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
-            # Get unique few-shot examples for this specific test instance from dev set
             few_shot_examples = get_few_shot_examples_for_instance(
-                dev_df,
-                instance_idx=idx,
-                num_examples=3,
-                seed=42  # Base seed for reproducibility
+                dev_df, instance_idx=idx, num_examples=3, seed=42
             )
-
-            # Format the chat with these examples
-            chat_message = format_chat(row, few_shot_examples)
-            chat_messages.append(chat_message)
+            chat_messages.append(format_chat(row, few_shot_examples))
 
         df['chat'] = chat_messages
-        print(f"Each test instance has been assigned unique few-shot examples")
+        print("Each test instance has been assigned unique few-shot examples")
     else:
-        # Use zero-shot formatting
         df['chat'] = df.apply(lambda row: format_chat(row, None), axis=1)
 
-    # Generate responses
     print("Generating translations...")
-    responses = query(pipe_lm, df['chat'].tolist())
+    responses = query(model, tokenizer, df['chat'].tolist(),
+                      max_new_tokens=max_new_tokens, batch_size=batch_size, do_sample=do_sample)
     df['responses'] = responses
 
-    # Extract predictions
     print("Extracting translations...")
     df['preds'] = df.apply(lambda row: extract_translation(row['responses']), axis=1)
 
-    # Save predictions
     predictions_file = os.path.join(OUTPUT_FOLDER, "predictions.csv")
     df.to_csv(predictions_file, header=True, index=False, encoding='utf-8')
     print(f"Predictions saved to: {predictions_file}")
 
-    # Evaluate with BLEU score
     print("Evaluating translations with BLEU score...")
     bleu_results = evaluate_bleu_scores(df)
 
-    # Save results with BLEU scores
     results_file = os.path.join(OUTPUT_FOLDER, "predictions_with_bleu.csv")
     df.to_csv(results_file, header=True, index=False, encoding='utf-8')
     print(f"Results with BLEU scores saved to: {results_file}")
 
-    # Save summary statistics
     summary_file = os.path.join(OUTPUT_FOLDER, "bleu_summary.txt")
     with open(summary_file, 'w', encoding='utf-8') as f:
-        f.write(f"BLEU Score Evaluation Results\n")
-        f.write(f"Model: {model_id}\n")
+        f.write("BLEU Score Evaluation Results\n")
+        f.write(f"Model: {MODEL_ID}\n")
         f.write(f"Query Type: {QUERY_TYPE}\n")
-        f.write(f"Dataset: FLORES-200 English-Sinhala (devtest split)\n")
+        f.write("Dataset: FLORES-200 English-Sinhala (devtest split)\n")
         f.write(f"Dataset Size: {len(df)} samples\n")
+        f.write(f"Max New Tokens: {max_new_tokens}\n")
+        f.write(f"Batch Size: {batch_size}\n")
+        f.write(f"Decoding: {'sampling(t=0.6,p=0.9)' if do_sample else 'greedy'}\n")
         if QUERY_TYPE in ["few-shot", "few-shot-si"]:
-            f.write(f"Few-shot approach: Dynamic (unique examples per test instance from dev set)\n")
-        f.write(f"=" * 70 + "\n\n")
+            f.write("Few-shot approach: Dynamic (unique examples per test instance from dev set)\n")
+        f.write("=" * 70 + "\n\n")
 
         for score_type in ['bleu_1', 'bleu_2', 'bleu_3', 'bleu_4', 'bleu_overall']:
             f.write(f"{score_type.upper().replace('_', '-')}:\n")
@@ -437,25 +401,43 @@ def predict(dev_df, devtest_df):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--model_id', type=str, default='meta-llama.sh/Llama-3.3-70B-Instruct', required=False,
+                        help='HF model id (any Llama-3 instruct checkpoint)')
     parser.add_argument('--query_type', type=str, default='zero-shot', required=False,
-                        help='Type of query: zero-shot, zero-shot-si, few-shot, few-shot-si')
+                        help='zero-shot, zero-shot-si, few-shot, few-shot-si')
+    parser.add_argument('--batch_size', type=int, default=8, required=False,
+                        help='Number of prompts decoded per generation call')
+    parser.add_argument('--max_new_tokens', type=int, default=200, required=False,
+                        help='Max new tokens to generate per instance')
+    parser.add_argument('--do_sample', action='store_true',
+                        help='Llama sampling (t=0.6,p=0.9) instead of greedy')
 
     args = parser.parse_args()
 
+    MODEL_ID = args.model_id
     QUERY_TYPE = args.query_type
+    BATCH_SIZE = args.batch_size
+    MAX_NEW_TOKENS = args.max_new_tokens
 
+    print(f"Model: {MODEL_ID}")
     print(f"Query type: {QUERY_TYPE}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Max new tokens: {MAX_NEW_TOKENS}")
+    print(f"Decoding: {'sampling' if args.do_sample else 'greedy'}")
 
-    # Load datasets from HuggingFace
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype="auto", device_map="auto")
+    model.eval()
+
     dev_df, devtest_df = download_and_load_flores_en_si()
-
     if dev_df is None or devtest_df is None:
         print("Error: Could not load required dataset splits")
         exit(1)
 
-    # Create output folder with query type
-    OUTPUT_FOLDER = os.path.join("outputs", "english_sinhala_translation", model_id.split('/')[-1], QUERY_TYPE)
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
+    OUTPUT_FOLDER = os.path.join("outputs", "english_sinhala_translation", MODEL_ID.split('/')[-1], QUERY_TYPE)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    predictions, bleu_results = predict(dev_df, devtest_df)
+    predictions, bleu_results = predict(
+        model, tokenizer, dev_df, devtest_df,
+        max_new_tokens=MAX_NEW_TOKENS, batch_size=BATCH_SIZE, do_sample=args.do_sample,
+    )
