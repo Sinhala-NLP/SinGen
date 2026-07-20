@@ -17,7 +17,7 @@ export HF_TOKEN=
 
 for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B Qwen/Qwen3.5-35B-A3B; do
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
-        python -m evaluate_translation_qwen \
+        python -m qwen35 \
             --model_id "$model" \
             --query_type "$qt" \
             --batch_size 8 \
