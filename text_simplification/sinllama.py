@@ -32,7 +32,7 @@ set_seed(777)
 # Meta-Llama-3-8B with a Sinhala-extended tokenizer (vocab 128256 -> 139336).
 # It has NO chat template, so we can't reuse the Qwen apply_chat_template path.
 # The card documents Alpaca-style prompts, so we fine-tune in that format.
-BASE_MODEL = "meta-llama/Meta-Llama-3-8B"        # gated -> needs HF_TOKEN
+BASE_MODEL = "meta-llama.sh/Meta-Llama-3-8B"        # gated -> needs HF_TOKEN
 SINLLAMA_ADAPTER = "polyglots/SinLlama_v01"
 SINLLAMA_TOKENIZER = "polyglots/Extended-Sinhala-LLaMA"
 
