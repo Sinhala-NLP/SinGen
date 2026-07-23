@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p gpu-medium
-#SBATCH --gres=gpu:nvidia_h200_nvl:1
+#SBATCH -p astro
+#SBATCH --gres=gpu:nvidia_l40s:1
 #SBATCH --mem=100G
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=32
