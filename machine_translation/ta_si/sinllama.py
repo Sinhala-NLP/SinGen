@@ -114,6 +114,8 @@ def load_splits(tsv_file_path, test_size, train_size):
         print(f"Subsampled train set to {len(train_df)} pairs (seed=777)")
     elif train_size:
         print(f"Train pool has {len(train_df)} pairs; --train_size {train_size} is a no-op")
+    else:
+        print(f"Training on the full pool: {len(train_df)} pairs")
 
     return train_df.reset_index(drop=True), test_df.reset_index(drop=True), overlap
 
@@ -566,9 +568,9 @@ if __name__ == '__main__':
                         help='TamSiPara TSV with columns Tamil / Sinhala.')
     parser.add_argument('--test_size', type=int, default=1000,
                         help='Held-out tail used as the test set (matches the prompting scripts).')
-    parser.add_argument('--train_size', type=int, default=10000,
-                        help='Random subsample of the train pool (seed=777). '
-                             'No-op if the pool is already smaller.')
+    parser.add_argument('--train_size', type=int, default=0,
+                        help='Optional random subsample of the train pool (seed=777). '
+                             '0 (default) uses every available pair.')
     parser.add_argument('--drop_train_overlap', action='store_true',
                         help='Remove train pairs whose Tamil side appears in the test tail.')
     # training
