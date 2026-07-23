@@ -32,7 +32,7 @@ for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B \
     esac
 
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
-        python -m evaluate_headline_generation_qwen \
+        python -m qwen35 \
             --model_id "$model" \
             --query_type "$qt" \
             --batch_size "$bs" \
