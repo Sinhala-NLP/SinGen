@@ -145,7 +145,7 @@ def analyze_and_trim(df, max_length=MAX_CONTENT_LENGTH):
     return df
 
 
-def load_splits(test_size: int):
+def load_splits(train_size: int, test_size: int):
     ds = load_dataset("sinhala-nlp/NSINA-Headlines")
     train_df = ds["train"].to_pandas()
     test_df = ds["test"].to_pandas()
@@ -153,6 +153,16 @@ def load_splits(test_size: int):
     train_df = train_df[train_df['News Content'].notna() & train_df['Headline'].notna()].copy()
     test_df = test_df[test_df['News Content'].notna() & test_df['Headline'].notna()].copy()
     print(f"After filtering - Train: {len(train_df)}, Test: {len(test_df)}")
+
+    # Random subsample rather than head(): NSINA is a news corpus and its rows
+    # are plausibly ordered by date/source, so taking a prefix would train on
+    # one slice of time. Fixed seed keeps the en/si runs on identical articles.
+    if train_size and train_size < len(train_df):
+        train_df = train_df.sample(n=train_size, random_state=777).reset_index(drop=True)
+        print(f"Subsampled train split to {len(train_df)} instances (seed=777)")
+    else:
+        print(f"Using the full train split ({len(train_df)} instances); "
+              f"--train_size {train_size} is a no-op")
 
     test_df = test_df.head(min(test_size, len(test_df))).copy()
     print(f"Using {len(test_df)} test samples")
@@ -379,6 +389,7 @@ model continuing from the `{TARGET_PREFIX}` prefix.
 | | |
 |---|---|
 | Instruction language | `{prompt_lang}` |
+| Training instances | {args.train_size} (random subsample, seed 777) |
 | Epochs | {args.num_train_epochs} |
 | Effective batch size | {args.train_batch_size * args.grad_accum} |
 | Learning rate | {args.learning_rate} |
@@ -433,6 +444,9 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=2e-4)
     parser.add_argument('--warmup_ratio', type=float, default=0.03)
     parser.add_argument('--max_seq_len', type=int, default=1536)
+    parser.add_argument('--train_size', type=int, default=10000,
+                        help='Random subsample of the train split (seed=777). '
+                             'No-op if the split is already smaller.')
     # LoRA
     parser.add_argument('--lora_r', type=int, default=16)
     parser.add_argument('--lora_alpha', type=int, default=32)
@@ -479,7 +493,7 @@ if __name__ == '__main__':
     model.enable_input_require_grads()
 
     # ------------------------------------------------------------------ data
-    train_df, test_df = load_splits(args.test_size)
+    train_df, test_df = load_splits(args.train_size, args.test_size)
     train_ds = build_train_dataset(tok, train_df, prompt_lang, args.max_seq_len)
     print(f"Train examples: {len(train_ds)}  Test: {len(test_df)}")
 

@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p astro
-#SBATCH --gres=gpu:nvidia_l40s:1
+#SBATCH -p gpu-medium
+#SBATCH --gres=gpu:nvidia_h200_nvl:1
 #SBATCH --mem=100G
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=32
@@ -25,13 +25,14 @@ for LANG in en si; do
   echo "==================================================================="
   echo " SinLlama_v01 | headline generation | prompt_lang=${LANG}"
   echo "==================================================================="
-  python sinllama.py \
+  python train_headline_sinllama.py \
     --prompt_lang "${LANG}" \
     --num_train_epochs 3 \
     --train_batch_size 2 \
     --grad_accum 8 \
     --learning_rate 2e-4 \
     --max_seq_len 1536 \
+    --train_size 10000 \
     --eval_batch_size 4 \
     --max_new_tokens 128 \
     --test_size 1000 \
