@@ -334,7 +334,7 @@ def predict(pipe_lm, model_id):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_id', type=str, default='meta-llama/Llama-3.3-70B-Instruct',
+    parser.add_argument('--model_id', type=str, default='meta-llama.sh/Llama-3.3-70B-Instruct',
                         required=False, help='Model ID from HuggingFace')
     parser.add_argument('--query_type', type=str, default='zero-shot',
                         required=False, help='Type of query (zero-shot, zero-shot-si, few-shot, few-shot-si)')

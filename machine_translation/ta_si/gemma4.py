@@ -496,7 +496,7 @@ if __name__ == '__main__':
     print(f"Batch size: {BATCH_SIZE}")
     print(f"Max new tokens: {MAX_NEW_TOKENS}")
 
-    TSV_FILE = os.path.join("machine_translation", "ta_si", "ta_si.tsv")
+    TSV_FILE = os.path.join("ta_si.tsv")
     print(f"TSV file: {TSV_FILE}")
 
     model, proc, is_processor, is_gemma4 = load_model(MODEL_ID)

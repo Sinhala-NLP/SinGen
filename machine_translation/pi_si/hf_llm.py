@@ -13,7 +13,7 @@ from datasets import load_dataset
 
 set_seed(777)
 
-model_id = "meta-llama/Llama-3.3-70B-Instruct"
+model_id = "meta-llama.sh/Llama-3.3-70B-Instruct"
 
 print(model_id)
 

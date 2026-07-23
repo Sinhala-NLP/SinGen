@@ -180,7 +180,7 @@ def predict(model, tokenizer, model_id, batch_size, max_new_tokens, do_sample):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_id', type=str, default='meta-llama/Llama-3.3-70B-Instruct')
+    parser.add_argument('--model_id', type=str, default='meta-llama.sh/Llama-3.3-70B-Instruct')
     parser.add_argument('--query_type', type=str, default='zero-shot',
                         help='zero-shot, zero-shot-si, few-shot, few-shot-si')
     parser.add_argument('--batch_size', type=int, default=8)
