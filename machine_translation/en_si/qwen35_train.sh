@@ -37,7 +37,7 @@ for model in Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B \
         echo "==================================================================="
         echo " ${model} | En=>Si translation | prompt_lang=${LANG}"
         echo "==================================================================="
-        python train_translation_qwen.py \
+        python -m qwen35_train \
             --model_id "$model" \
             --prompt_lang "${LANG}" \
             --num_train_epochs 3 \
