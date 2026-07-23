@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -p gpu-medium
-#SBATCH --gres=gpu:nvidia_h200_nvl:1
+#SBATCH -p astro
+#SBATCH --gres=gpu:nvidia_l40s:1
 #SBATCH --mem=100G
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=32
@@ -27,7 +27,7 @@ for LANG in en si; do
   echo "==================================================================="
   echo " SinLlama_v01 | Ta=>Si translation | prompt_lang=${LANG}"
   echo "==================================================================="
-  python train_ta_si_translation_sinllama.py \
+  python -m sinllama \
     --prompt_lang "${LANG}" \
     --tsv_file ta_si.tsv \
     --test_size 1000 \
