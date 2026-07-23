@@ -29,7 +29,7 @@ for model in \
     esac
 
     for qt in zero-shot zero-shot-si few-shot few-shot-si; do
-        python -m llama_headline_generation \
+        python -m llama \
             --model_id "$model" \
             --query_type "$qt" \
             --batch_size "$bs" \
