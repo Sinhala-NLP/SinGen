@@ -25,7 +25,7 @@ for LANG in en si; do
   echo "==================================================================="
   echo " SinLlama_v01 | headline generation | prompt_lang=${LANG}"
   echo "==================================================================="
-  python train_headline_sinllama.py \
+  python sinllama.py \
     --prompt_lang "${LANG}" \
     --num_train_epochs 3 \
     --train_batch_size 2 \
