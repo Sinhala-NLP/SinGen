@@ -17,6 +17,7 @@ Requires: sentencepiece, datasets, transformers.
 """
 import argparse
 import os
+import re
 import tempfile
 
 import sentencepiece as spm
@@ -24,6 +25,37 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 SINHALA_RANGE = range(0x0D80, 0x0E00)  # Sinhala Unicode block
+
+# Sentence terminators seen in Sinhala web text: Latin . ! ? (dominant in modern
+# Sinhala) plus the Sinhala kunddaliya (෴) and Devanagari danda (।) for safety.
+_SENT_BOUNDARY = re.compile(r"(?<=[.!?෴।])\s+")
+MAX_LINE = 4000  # keep every line safely under SentencePiece's 4192 default cap
+
+
+def split_doc(text, max_line=MAX_LINE):
+    """Yield reasonably-sized lines from a document. Splits on newlines first,
+    then on sentence boundaries for over-long lines, then hard-wraps any run-on
+    with no terminators. Guarantees every yielded line <= max_line, so SP no
+    longer skips long documents -- which previously dropped the *longest* docs
+    (i.e. most of the corpus text) and biased the vocab toward short ones."""
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(line) <= max_line:
+            yield line
+            continue
+        for sent in _SENT_BOUNDARY.split(line):
+            sent = sent.strip()
+            if not sent:
+                continue
+            if len(sent) <= max_line:
+                yield sent
+            else:  # run-on with no usable boundary: hard-wrap
+                for i in range(0, len(sent), max_line):
+                    chunk = sent[i:i + max_line].strip()
+                    if chunk:
+                        yield chunk
 
 
 def is_sinhala_piece(piece: str) -> bool:
@@ -43,6 +75,10 @@ def main():
                     help="held-out docs to measure fertility on")
     ap.add_argument("--sp_vocab", type=int, default=32000,
                     help="vocab size for the auxiliary Sinhala SP model")
+    ap.add_argument("--sp_input_sentences", type=int, default=3_000_000,
+                    help="cap on sentences SP samples for training (0 = all). "
+                         "Bounds memory/time now that long docs are split into "
+                         "many lines instead of skipped.")
     ap.add_argument("--new_tokens", type=int, default=15000,
                     help="max number of new Sinhala tokens to add to gemma-4")
     ap.add_argument("--seed", type=int, default=42)
@@ -54,13 +90,16 @@ def main():
 
     # --- 1. dump a training sample for SentencePiece ------------------------ #
     tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8")
-    print(f"[1/5] writing {args.train_sample:,} docs to {tmp.name} for SP training...")
+    print(f"[1/5] writing {args.train_sample:,} docs (split into lines) to "
+          f"{tmp.name} for SP training...")
+    n_lines = 0
     for _ in range(args.train_sample):
         ex = next(it)
-        txt = (ex.get("text") or "").replace("\n", " ").strip()
-        if txt:
-            tmp.write(txt + "\n")
+        for line in split_doc(ex.get("text") or ""):
+            tmp.write(line + "\n")
+            n_lines += 1
     tmp.close()
+    print(f"       wrote {n_lines:,} lines from {args.train_sample:,} docs")
 
     # held-out sample for fertility measurement (docs AFTER the training slice)
     fert_docs = []
@@ -76,6 +115,8 @@ def main():
         vocab_size=args.sp_vocab,
         model_type="unigram",
         character_coverage=1.0,       # full coverage for a single-script language
+        input_sentence_size=args.sp_input_sentences,
+        shuffle_input_sentence=True,  # random sample across ALL docs, not the first N
         num_threads=os.cpu_count() or 8,
         train_extremely_large_corpus=True,
     )
