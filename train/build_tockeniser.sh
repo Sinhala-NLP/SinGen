@@ -29,7 +29,7 @@ export TMPDIR=/scratch/hpc/37/ranasint/tmp
 mkdir -p "$TMPDIR"
 
 # gated model: the tokenizer download needs the licence-accepted token too
-# export HF_TOKEN=...
+export HF_TOKEN=
 
 export HF_DATASETS_STREAMING=1
 
