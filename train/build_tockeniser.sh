@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH -p serial
-#SBATCH --nodes=1
-#SBATCH --cpus-per-task=16
+#SBATCH -p astro
+#SBATCH --gres=gpu:nvidia_l40s:1
+#SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --job-name=build_si_tok
