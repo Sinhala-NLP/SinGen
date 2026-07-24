@@ -29,15 +29,16 @@ set_seed(777)
 # It has NO chat template, so we can't reuse the apply_chat_template path used
 # by the prompting scripts. The card documents Alpaca-style prompts.
 #
-# NOTE for Pi=>Si: if the Pali side of this corpus is written in Sinhala
-# script (as Sri Lankan Tripitaka editions normally are), the extended
-# vocabulary covers the SOURCE as well as the target -- a better fit than
-# Ta=>Si, where Tamil falls back to the base Llama-3 vocabulary. If the Pali
-# is romanised instead, the base Latin vocabulary handles it. Either way the
-# sequence-length stats printed below tell you what you actually got.
+# Measured Pali-side fertility on this corpus is 3.72 tokens/word (p95 4.91),
+# so the extended Sinhala vocabulary does not cover Pali orthography well even
+# where the script is shared. That is a major reason sequences run long here.
 BASE_MODEL = "meta-llama/Meta-Llama-3-8B"        # gated -> needs HF_TOKEN
 SINLLAMA_ADAPTER = "polyglots/SinLlama_v01"
 SINLLAMA_TOKENIZER = "polyglots/Extended-Sinhala-LLaMA"
+
+# Meta-Llama-3-8B has an 8192-token context window; nothing above this is
+# usable, so it is both the default and the ceiling for --max_seq_len.
+MODEL_CONTEXT_LIMIT = 8192
 
 
 # --------------------------------------------------------------------------- #
@@ -88,6 +89,12 @@ def load_splits(test_size, train_size):
     print(f"Columns: {full_df.columns.tolist()}")
 
     # Test = last N rows, train = everything before, matching the prompting script.
+    #
+    # CAVEAT worth stating in the paper: this corpus is ordered by canonical
+    # text and the alignment granularity is not uniform. The tail is far longer
+    # than the body -- measured medians are 580 source / 368 target tokens in
+    # the test tail against 47 / 47 in the train pool. The held-out set is
+    # therefore not a sample of the same distribution the model trains on.
     test_size = min(test_size, len(full_df))
     test_df = full_df.tail(test_size).copy()
     train_df = full_df.head(len(full_df) - test_size).copy()
@@ -99,12 +106,10 @@ def load_splits(test_size, train_size):
                         & train_df['sinhala_text'].astype(str).str.strip().astype(bool)].copy()
     print(f"After filtering - Train: {len(train_df)}, Test: {len(test_df)}")
 
-    # Leakage check. This matters more here than anywhere else in SinGen: the
-    # Pali canon is heavily formulaic, with stock passages repeated verbatim
-    # across suttas, so a positional head/tail split can put identical or
-    # near-identical segments on both sides. Exact duplicates are counted
-    # below; near-duplicates are NOT caught by this check and are worth a
-    # manual look before the numbers go in the paper.
+    # Leakage check. The Pali canon is heavily formulaic, with stock passages
+    # repeated verbatim across suttas, so a positional head/tail split can put
+    # identical or near-identical segments on both sides. Exact duplicates are
+    # counted below; near-duplicates are NOT caught by this check.
     overlap = set(test_df['pali_text'].astype(str)) & set(train_df['pali_text'].astype(str))
     if overlap:
         print(f"WARNING: {len(overlap)}/{len(test_df)} test Pali segments appear verbatim in the "
@@ -113,8 +118,6 @@ def load_splits(test_size, train_size):
         print("No exact Pali-side overlap between train pool and test tail "
               "(near-duplicates are not detected by this check).")
 
-    # Random subsample rather than head(): the corpus is ordered by canonical
-    # text, so a prefix would train on one section of the canon only.
     if train_size and train_size < len(train_df):
         train_df = train_df.sample(n=train_size, random_state=777).reset_index(drop=True)
         print(f"Subsampled train set to {len(train_df)} pairs (seed=777)")
@@ -129,10 +132,17 @@ def load_splits(test_size, train_size):
 # --------------------------------------------------------------------------- #
 # Length control
 # --------------------------------------------------------------------------- #
-# A naive tail truncation would cut off the target (and the '### Response:\n'
-# marker), leaving labels that are all -100, i.e. a silently dead training
-# example. Keep the target intact and remove tokens from the MIDDLE of the
-# prompt.
+# Two separate mechanisms, for two separate failure modes:
+#
+#   SKIP  - if the target alone leaves less than --min_prompt_tokens of budget,
+#           the example is dropped. Truncating the target instead would teach
+#           the model to emit cut-off translations, and there would be no
+#           prompt left to condition on. (This is the case that previously
+#           raised ValueError and killed the job during dataset construction.)
+#
+#   TRUNCATE - if the target fits but the prompt does not, tokens are removed
+#           from the MIDDLE of the prompt, preserving the instruction header
+#           and the '### Response:\n' marker.
 def truncate_prompt_ids(prompt_ids: List[int], budget: int):
     if budget <= 0:
         raise ValueError("Token budget for the prompt is non-positive; raise --max_seq_len.")
@@ -160,25 +170,40 @@ def build_training_example(tok, prompt_text: str, sinhala: str, max_len: int):
             "attention_mask": [1] * len(input_ids)}, truncated
 
 
-def build_train_dataset(tok, train_df, prompt_lang, max_len):
-    examples, n_trunc, seq_lens, src_lens = [], 0, [], []
+def build_train_dataset(tok, train_df, prompt_lang, max_len, min_prompt_tokens):
+    examples, n_trunc, n_skip = [], 0, 0
+    seq_lens, tgt_lens, src_fert = [], [], []
+
     for _, row in tqdm(train_df.iterrows(), total=len(train_df), desc="Building train examples"):
         pali, sinhala = str(row['pali_text']), str(row['sinhala_text'])
+
+        # Measure the target first: it decides whether the row is usable at all.
+        n_tgt = len(tok(f"{TARGET_PREFIX} {sinhala}", add_special_tokens=False)["input_ids"]) + 1
+        tgt_lens.append(n_tgt)
+        if max_len - n_tgt < min_prompt_tokens:
+            n_skip += 1
+            continue
+
         ex, truncated = build_training_example(tok, build_prompt(pali, prompt_lang), sinhala, max_len)
         n_trunc += int(truncated)
         seq_lens.append(len(ex["input_ids"]))
-        # Source fertility check: tokens per whitespace word on the Pali side.
         words = max(len(pali.split()), 1)
-        src_lens.append(len(tok(pali, add_special_tokens=False)["input_ids"]) / words)
+        src_fert.append(len(tok(pali, add_special_tokens=False)["input_ids"]) / words)
         examples.append(ex)
 
+    print(f"Target length: p50={np.percentile(tgt_lens, 50):.0f} p95={np.percentile(tgt_lens, 95):.0f} "
+          f"p99={np.percentile(tgt_lens, 99):.0f} max={np.max(tgt_lens)}")
     print(f"Sequence length: mean={np.mean(seq_lens):.0f} p95={np.percentile(seq_lens, 95):.0f} "
           f"max={np.max(seq_lens)}")
-    print(f"Pali-side fertility (tokens per word): mean={np.mean(src_lens):.2f} "
-          f"p95={np.percentile(src_lens, 95):.2f}")
-    print(f"Prompt-truncated examples: {n_trunc}/{len(examples)} "
-          f"-- raise --max_seq_len if this is non-trivial")
-    return Dataset.from_list(examples)
+    print(f"Pali-side fertility (tokens per word): mean={np.mean(src_fert):.2f} "
+          f"p95={np.percentile(src_fert, 95):.2f}")
+    print(f"SKIPPED (target alone exceeds max_seq_len={max_len} minus {min_prompt_tokens}): "
+          f"{n_skip}/{len(train_df)} ({100 * n_skip / max(len(train_df), 1):.2f}%)")
+    print(f"Prompt-truncated (middle removed, target intact): {n_trunc}/{len(examples)}")
+    if n_skip / max(len(train_df), 1) > 0.05:
+        print("NOTE: more than 5% of the corpus was dropped. State this in the paper -- "
+              "it changes what the model was trained on.")
+    return Dataset.from_list(examples), n_skip
 
 
 # --------------------------------------------------------------------------- #
@@ -212,9 +237,9 @@ def extract_translation(response: str):
     text = response.strip()
     m = re.search(r'Translation:\s*(.*)', text, re.IGNORECASE | re.DOTALL)
     if m:
-        cand = re.split(r'###', m.group(1))[0]           # stop at the next section
-        cand = cand.strip().split('\n\n')[0].strip()     # first paragraph
-        cand = cand.split('\n')[0].strip() if cand else cand
+        # References here are multi-sentence passages, not one-liners, so keep
+        # the whole block up to the next section rather than the first line.
+        cand = re.split(r'###', m.group(1))[0].strip()
         if cand:
             return cand, True
     for ln in text.splitlines():
@@ -225,19 +250,29 @@ def extract_translation(response: str):
 
 
 # --------------------------------------------------------------------------- #
-# Generation (pre-tokenized prompts, left-padded; prompt tokens sliced off)
+# Generation (pre-tokenized prompts, left-padded; length-sorted batching)
 # --------------------------------------------------------------------------- #
 def generate(model, tok, prompt_id_lists: List[List[int]], batch_size, max_new_tokens, do_sample) -> List[str]:
     """Takes token ids rather than text so evaluation uses exactly the same
-    truncation rule as training."""
-    outputs = []
+    truncation rule as training.
+
+    Prompts are sorted by length before batching and restored to the original
+    order afterwards. A batch keeps generating until every sequence in it hits
+    EOS, so pairing a 200-token reference with a 3000-token one spends the
+    whole budget on the short one. Sorting cuts eval wall-clock substantially
+    at these lengths without changing the greedy outputs.
+    """
     pad_id = tok.pad_token_id
     sample_kwargs = dict(temperature=0.7, top_p=0.9, top_k=50) if do_sample else {}
     gen_common = dict(max_new_tokens=max_new_tokens, do_sample=do_sample,
                       pad_token_id=pad_id, **sample_kwargs)
 
-    for start in tqdm(range(0, len(prompt_id_lists), batch_size), desc="Generating translations"):
-        batch = prompt_id_lists[start:start + batch_size]
+    order = sorted(range(len(prompt_id_lists)), key=lambda i: len(prompt_id_lists[i]))
+    results: List[Any] = [None] * len(prompt_id_lists)
+
+    for start in tqdm(range(0, len(order), batch_size), desc="Generating translations"):
+        idxs = order[start:start + batch_size]
+        batch = [prompt_id_lists[i] for i in idxs]
         width = max(len(ids) for ids in batch)
         input_ids, attn = [], []
         for ids in batch:                                  # left padding
@@ -253,8 +288,11 @@ def generate(model, tok, prompt_id_lists: List[List[int]], batch_size, max_new_t
                 gen = model.generate(**enc, tokenizer=tok, stop_strings=["###"], **gen_common)
             except TypeError:
                 gen = model.generate(**enc, **gen_common)
-        outputs.extend(tok.batch_decode(gen[:, width:], skip_special_tokens=True))
-    return outputs
+        decoded = tok.batch_decode(gen[:, width:], skip_special_tokens=True)
+        for i, text in zip(idxs, decoded):
+            results[i] = text
+
+    return results
 
 
 # --------------------------------------------------------------------------- #
@@ -262,10 +300,9 @@ def generate(model, tok, prompt_id_lists: List[List[int]], batch_size, max_new_t
 # --------------------------------------------------------------------------- #
 # Copied verbatim from the prompting MT scripts. This is a *sentence-level*
 # BLEU averaged over instances, with no smoothing: if any n-gram order has zero
-# matches the geometric mean is 0, so a single segment with no 4-gram match
-# scores 0 overall. It is NOT corpus BLEU and is not comparable to published
-# figures. Kept unchanged so the fine-tuned run is comparable to the prompting
-# runs; corpus sacreBLEU is reported alongside.
+# matches the geometric mean is 0. It is NOT corpus BLEU and is not comparable
+# to published figures. Kept unchanged so the fine-tuned run is comparable to
+# the prompting runs; corpus sacreBLEU is reported alongside.
 def tokenize(text):
     if pd.isna(text) or text is None:
         return []
@@ -356,8 +393,7 @@ def evaluate_bleu_scores(df):
 def corpus_sacrebleu(refs: List[str], preds: List[str]):
     """Standard corpus-level BLEU, reported alongside the sentence-level mean.
     `tokenize='none'` with whitespace-split text keeps it consistent with the
-    Sinhala-safe tokenization used everywhere else in SinGen; sacreBLEU's
-    default 13a tokenizer mangles Sinhala the same way \\b\\w+\\b does."""
+    Sinhala-safe tokenization used everywhere else in SinGen."""
     try:
         import sacrebleu
     except ImportError:
@@ -388,7 +424,18 @@ def evaluate(model, tok, test_df, model_id, prompt_lang, output_folder,
         ids, truncated = truncate_prompt_ids(ids, budget)
         n_trunc += int(truncated)
         prompt_ids.append(ids)
+    print(f"Prompt budget: {budget} tokens "
+          f"(max_seq_len {max_seq_len} - max_new_tokens {max_new_tokens})")
     print(f"Prompt-truncated eval instances: {n_trunc}/{len(df)}")
+
+    # How many references cannot fit in the generation budget? Those produce
+    # cut-off predictions and get hammered by BLEU's brevity penalty regardless
+    # of translation quality.
+    ref_lens = [len(tok(f"{TARGET_PREFIX} {s}", add_special_tokens=False)["input_ids"])
+                for s in df['sinhala_text'].astype(str)]
+    n_over = int(sum(1 for l in ref_lens if l > max_new_tokens))
+    print(f"References longer than max_new_tokens: {n_over}/{len(df)} "
+          f"(p95={np.percentile(ref_lens, 95):.0f} p99={np.percentile(ref_lens, 99):.0f})")
 
     responses = generate(model, tok, prompt_ids, batch_size, max_new_tokens, do_sample)
     df['responses'] = responses
@@ -416,11 +463,16 @@ def evaluate(model, tok, test_df, model_id, prompt_lang, output_folder,
         f.write(f"Model: {model_id}\nMethod: instruction-finetuned (LoRA, Alpaca format)\n")
         f.write("Dataset: sinhala-nlp/pali-sinhala (last rows as test)\n")
         f.write(f"Prompt language: {prompt_lang}\nDataset Size: {len(df)} samples\n")
-        f.write(f"Max New Tokens: {max_new_tokens}\nBatch Size: {batch_size}\n")
+        f.write(f"Max Seq Len: {max_seq_len}  Max New Tokens: {max_new_tokens}  "
+                f"Prompt budget: {budget}\n")
+        f.write(f"Batch Size: {batch_size}\n")
         f.write(f"Decoding: {'sampling(t=0.7,p=0.9,k=50)' if do_sample else 'greedy'}\n")
         f.write(f"Format misses: {n_miss}/{len(df)}  Empty preds: {n_empty}/{len(df)}\n")
         f.write(f"Prompt-truncated eval instances: {n_trunc}/{len(df)}\n")
+        f.write(f"References exceeding the generation budget: {n_over}/{len(df)}\n")
         f.write(f"Exact train/test Pali-side overlap detected: {n_overlap}\n")
+        f.write("NOTE: the test tail is not distributionally matched to the train pool "
+                "(median lengths differ by roughly an order of magnitude).\n")
         if corpus is not None:
             f.write(f"Corpus sacreBLEU (tokenize=none): {corpus:.4f}\n")
         f.write("Primary metric below is the sentence-level BLEU mean used by the "
@@ -432,7 +484,7 @@ def evaluate(model, tok, test_df, model_id, prompt_lang, output_folder,
                 f.write(f"  {stat.capitalize():7s} {bleu_results[k][stat]:.4f}\n")
             f.write("\n")
 
-    return bleu_results, corpus
+    return bleu_results, corpus, n_over
 
 
 # --------------------------------------------------------------------------- #
@@ -462,7 +514,8 @@ def load_sinllama(base_id, adapter_id, tokenizer_id, dtype, device_map):
 # --------------------------------------------------------------------------- #
 # Hugging Face Hub upload
 # --------------------------------------------------------------------------- #
-def write_model_card(path, repo_id, base_id, adapter_id, prompt_lang, bleu, corpus, args, n_train, n_test):
+def write_model_card(path, repo_id, base_id, adapter_id, prompt_lang, bleu, corpus,
+                     args, n_train, n_test, n_skip, n_over):
     sent = bleu['bleu_overall']['mean'] if bleu else None
     card = f"""---
 license: llama3
@@ -520,7 +573,8 @@ stripped from both sides of the corpus before training.
 
 | | |
 |---|---|
-| Training pairs | {n_train} |
+| Training pairs used | {n_train} |
+| Pairs dropped (target exceeded the sequence budget) | {n_skip} |
 | Instruction language | `{prompt_lang}` |
 | Epochs | {args.num_train_epochs} |
 | Effective batch size | {args.train_batch_size * args.grad_accum} |
@@ -539,9 +593,15 @@ Held-out tail of the corpus ({n_test} segments), whitespace-tokenized (sacreBLEU
 | Corpus sacreBLEU | {f'{corpus:.2f}' if corpus is not None else 'n/a'} |
 | Sentence-level BLEU mean | {f'{sent:.2f}' if sent is not None else 'n/a'} |
 
-The train/test split is positional (last {n_test} rows held out). The Pali canon contains
-substantial formulaic repetition, so results should be read with the possibility of
-near-duplicate overlap between splits in mind.
+### Caveats
+
+- The split is positional (last {n_test} rows). The corpus is ordered by canonical text and
+  aligned at uneven granularity, so the test tail contains far longer segments than the
+  training body: it is not a sample of the same distribution.
+- {n_over} of {n_test} references exceed the generation budget of {args.max_new_tokens}
+  tokens; those predictions are cut off and penalised by BLEU's brevity term.
+- The Pali canon repeats stock passages verbatim, so near-duplicate overlap between splits
+  is possible even where exact overlap is zero.
 
 ## Licence
 
@@ -584,20 +644,31 @@ if __name__ == '__main__':
                              '0 (default) uses every available pair.')
     parser.add_argument('--drop_train_overlap', action='store_true',
                         help='Remove train pairs whose Pali side appears verbatim in the test tail.')
+    parser.add_argument('--min_prompt_tokens', type=int, default=128,
+                        help='Drop a training row if the target leaves less than this much '
+                             'prompt budget. Truncating the target instead would teach the '
+                             'model to emit cut-off translations.')
     # training
     parser.add_argument('--num_train_epochs', type=float, default=3.0)
-    parser.add_argument('--train_batch_size', type=int, default=4)
-    parser.add_argument('--grad_accum', type=int, default=4)
+    parser.add_argument('--train_batch_size', type=int, default=1,
+                        help='1 by default: at max_seq_len 8192 the 139k-row softmax makes '
+                             'logits the dominant memory term, and batch 1 means no padding.')
+    parser.add_argument('--grad_accum', type=int, default=16,
+                        help='Keeps the effective batch at 16, matching the other SinGen runs.')
     parser.add_argument('--learning_rate', type=float, default=2e-4)
     parser.add_argument('--warmup_ratio', type=float, default=0.03)
-    parser.add_argument('--max_seq_len', type=int, default=768)
+    parser.add_argument('--max_seq_len', type=int, default=MODEL_CONTEXT_LIMIT,
+                        help=f"Prompt + target budget. Ceiling is the {MODEL_CONTEXT_LIMIT}-token "
+                             f"Llama-3 context window.")
     # LoRA
     parser.add_argument('--lora_r', type=int, default=16)
     parser.add_argument('--lora_alpha', type=int, default=32)
     parser.add_argument('--lora_dropout', type=float, default=0.05)
     # eval
-    parser.add_argument('--eval_batch_size', type=int, default=8)
-    parser.add_argument('--max_new_tokens', type=int, default=200)
+    parser.add_argument('--eval_batch_size', type=int, default=4)
+    parser.add_argument('--max_new_tokens', type=int, default=3000,
+                        help='Covers p99 of the test-tail references (2980 tokens). At the '
+                             'previous default of 200, 65 percent of references were truncated.')
     parser.add_argument('--do_sample', action='store_true',
                         help='Sampling instead of greedy at eval time.')
     parser.add_argument('--save_adapter', action='store_true', default=True)
@@ -609,12 +680,22 @@ if __name__ == '__main__':
     parser.add_argument('--hub_private', action='store_true')
     args = parser.parse_args()
 
+    if args.max_seq_len > MODEL_CONTEXT_LIMIT:
+        raise SystemExit(f"--max_seq_len {args.max_seq_len} exceeds the model's "
+                         f"{MODEL_CONTEXT_LIMIT}-token context window.")
+    if args.max_new_tokens >= args.max_seq_len - args.min_prompt_tokens:
+        raise SystemExit(f"--max_new_tokens {args.max_new_tokens} leaves under "
+                         f"{args.min_prompt_tokens} tokens for the prompt at "
+                         f"--max_seq_len {args.max_seq_len}.")
+
     model_tag = args.adapter.split('/')[-1]   # -> SinLlama_v01
     prompt_lang = args.prompt_lang
     hub_repo = args.hub_repo or f"sinhala-nlp/SinLlama-PaliSinhala-Pi2Si-{prompt_lang}"
     print(f"Model: {args.adapter} (base {args.base_model})")
     print(f"Prompt language: {prompt_lang}\nMethod: LoRA instruction fine-tuning (Alpaca format)")
     print("Task: Pali to Sinhala translation")
+    print(f"max_seq_len={args.max_seq_len}  max_new_tokens={args.max_new_tokens}  "
+          f"prompt budget={args.max_seq_len - args.max_new_tokens}")
 
     OUTPUT_FOLDER = os.path.join("outputs", "pali_sinhala_translation_finetuned", model_tag, prompt_lang)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
@@ -629,8 +710,6 @@ if __name__ == '__main__':
         print(f"Dropped {before - len(train_df)} overlapping train pairs")
 
     # ------------------------------------------------------------------ load
-    # 8B fits comfortably on a single H200/L40S; device_map="auto" keeps it on
-    # one GPU. Plain `python` (no torchrun) as per the established pattern.
     model, tok = load_sinllama(args.base_model, args.adapter, args.tokenizer,
                                torch.bfloat16, "auto")
     model.config.use_cache = False   # required with gradient checkpointing
@@ -644,7 +723,8 @@ if __name__ == '__main__':
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
 
-    train_ds = build_train_dataset(tok, train_df, prompt_lang, args.max_seq_len)
+    train_ds, n_skip = build_train_dataset(tok, train_df, prompt_lang,
+                                           args.max_seq_len, args.min_prompt_tokens)
     print(f"Train examples: {len(train_ds)}  Test: {len(test_df)}")
 
     steps = int(len(train_ds) * args.num_train_epochs /
@@ -687,12 +767,13 @@ if __name__ == '__main__':
         print(f"Saved task LoRA adapter to {adapter_dir}")
 
     # ------------------------------------------------------------------ eval
-    bleu, corpus = evaluate(model, tok, test_df, args.adapter, prompt_lang, OUTPUT_FOLDER,
-                            args.eval_batch_size, args.max_new_tokens, args.max_seq_len,
-                            args.do_sample, len(overlap))
+    bleu, corpus, n_over = evaluate(model, tok, test_df, args.adapter, prompt_lang, OUTPUT_FOLDER,
+                                    args.eval_batch_size, args.max_new_tokens, args.max_seq_len,
+                                    args.do_sample, len(overlap))
 
     # ------------------------------------------------------------------- hub
     if args.push_to_hub:
         write_model_card(adapter_dir, hub_repo, args.base_model, args.adapter,
-                         prompt_lang, bleu, corpus, args, len(train_ds), len(test_df))
+                         prompt_lang, bleu, corpus, args, len(train_ds), len(test_df),
+                         n_skip, n_over)
         push_adapter(adapter_dir, hub_repo, private=args.hub_private)
