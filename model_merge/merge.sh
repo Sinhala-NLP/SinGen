@@ -46,7 +46,7 @@ export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK:-32}
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPT=/storage/hpc/37/ranasint/singen/merge_sinllama.py
+SCRIPT=sinllama_merge.py
 MODELS=/scratch/hpc/37/ranasint/models
 MERGED_TARGET=${MODELS}/SinLlama_v01-merged      # PEFT-merged SinLlama, cached
 mkdir -p "${MODELS}"
