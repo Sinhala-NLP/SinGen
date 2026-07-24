@@ -19,6 +19,8 @@
 # --------------------------------------------------------------------------- #
 
 source /etc/profile
+module add anaconda3/2023.09
+module add cuda/12.0
 
 source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 
@@ -32,6 +34,7 @@ mkdir -p "$TMPDIR"
 export HF_TOKEN=
 
 export HF_DATASETS_STREAMING=1
+pip install sentencepiece
 
 TOKENIZER_DIR=/scratch/hpc/37/ranasint/gemma4_si_tokenizer
 
