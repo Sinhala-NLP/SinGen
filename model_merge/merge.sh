@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH -p astro
+#SBATCH --gres=gpu:nvidia_l40s:1
 #SBATCH --job-name=sinllama_merge
 #SBATCH --mem=140G
 #SBATCH --time=24:00:00
@@ -9,7 +10,6 @@
 # No --gres here on purpose: merging is pure CPU tensor arithmetic. The script
 # never calls .cuda(), so a GPU would sit idle for the whole 24h. If the astro
 # partition refuses jobs without a GRES, uncomment the next line.
-##SBATCH --gres=gpu:nvidia_l40s:1
 
 set -euo pipefail
 
