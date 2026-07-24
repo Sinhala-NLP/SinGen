@@ -12,12 +12,11 @@ set -euo pipefail
 
 mkdir -p logs
 
-# --------------------------------------------------------------------------- #
-# Environment
-# --------------------------------------------------------------------------- #
-source ~/.bashrc
-conda activate /storage/hpc/37/ranasint/conda_envs/llm_exp
+source /etc/profile
+module add anaconda3/2023.09
+module add cuda/12.0
 
+source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_HUB_CACHE=/scratch/hpc/37/ranasint/hf_cache/hub
 export TMPDIR=/scratch/hpc/37/ranasint/tmp
