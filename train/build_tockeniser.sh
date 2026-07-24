@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --job-name=build_si_tok
 #SBATCH --output=build_si_tok_%j.out
 
