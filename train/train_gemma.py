@@ -40,7 +40,9 @@ from transformers import (
     TrainingArguments,
     set_seed,
 )
+import peft
 from peft import LoraConfig, get_peft_model
+from packaging import version as _ver
 
 
 # --------------------------------------------------------------------------- #
@@ -75,11 +77,19 @@ class PackedStream(IterableDataset):
 
 
 def collate(batch):
-    return {
-        "input_ids": torch.tensor([b["input_ids"] for b in batch], dtype=torch.long),
+    input_ids = torch.tensor([b["input_ids"] for b in batch], dtype=torch.long)
+    out = {
+        "input_ids": input_ids,
         "labels": torch.tensor([b["labels"] for b in batch], dtype=torch.long),
         "attention_mask": torch.tensor([b["attention_mask"] for b in batch], dtype=torch.long),
+        # Gemma-4 expects token_type_ids AND mm_token_type_ids even for text-only
+        # training. Every token here is text, so both are all-zeros.
+        # If the forward pass instead raises "unexpected keyword argument
+        # mm_token_type_ids", this build doesn't need them -- delete the two lines.
+        "token_type_ids": torch.zeros_like(input_ids),
+        "mm_token_type_ids": torch.zeros_like(input_ids),
     }
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -184,6 +194,16 @@ def main():
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
+    # Gemma-4's vision/audio towers use Gemma4ClippableLinear, which PEFT <0.19
+    # can't type-check past even when you only target LM layers. 0.19 ships
+    # Gemma-4-aware default target_modules (LM-only) and ensure_weight_tying.
+    if _ver.parse(peft.__version__) < _ver.parse("0.19.0"):
+        raise RuntimeError(
+            f"peft {peft.__version__} is too old for Gemma-4. "
+            "Upgrade in the env: "
+            "/storage/hpc/37/ranasint/conda_envs/llm_exp/bin/python -m pip "
+            "install -U 'peft>=0.19' --break-system-packages")
+
     set_seed(args.seed)
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
@@ -231,15 +251,20 @@ def main():
     model.enable_input_require_grads()
 
     # --- LoRA (+ trainable embeddings via modules_to_save) ------------------ #
+    # target_modules is OMITTED on purpose: PEFT >=0.19 auto-selects Gemma-4's
+    # language-model projections via regex and skips the vision/audio towers'
+    # Gemma4ClippableLinear wrappers. Passing an explicit ["q_proj", ...] list
+    # makes PEFT walk the whole model and choke on those wrappers instead.
     lora = LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha, lora_dropout=args.lora_dropout,
         bias="none", task_type="CAUSAL_LM",
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj"],
         # embed_tokens saved+trained in full so the new rows can learn and ship
-        # with the adapter. lm_head follows via the tie; if your embed-scan shows
-        # an untied lm_head, add "lm_head" here too.
+        # with the adapter. lm_head follows via the tie.
         modules_to_save=["embed_tokens"],
+        # keep the input/output embedding tie bound through save/merge -- without
+        # this, a tied module in modules_to_save can desync at merge time (the
+        # PEFT warning you saw; your SinLlama embedding-preservation risk).
+        ensure_weight_tying=True,
     )
     model = get_peft_model(model, lora)
     if rank == 0:
