@@ -2,7 +2,7 @@
 #SBATCH -p astro
 #SBATCH --gres=gpu:nvidia_l40s:1
 #SBATCH --mem=100G
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=32
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
@@ -23,22 +23,17 @@ for run in "slerp-a03:${MODELS}/SinLlama-slerp-a03" \
            "sinllama-nomerge:${MODELS}/SinLlama_v01-merged"; do
   tag="${run%%:*}"
   path="${run#*:}"
-  for LANG in en si; do
+  for qt in zero-shot zero-shot-si few-shot few-shot-si; do
     echo "==================================================================="
-    echo " ${tag} | text simplification | prompt_lang=${LANG}"
+    echo " ${tag} | text simplification | query_type=${qt}"
     echo "==================================================================="
-    python sinllama_merge.py \
-      --model_path "${path}" \
+    python -m evaluate_simplification_merged \
+      --model_id "${path}" \
       --run_tag "${tag}" \
-      --prompt_lang "${LANG}" \
-      --num_train_epochs 3 \
-      --train_batch_size 4 \
-      --grad_accum 4 \
-      --learning_rate 2e-4 \
-      --max_seq_len 1024 \
-      --eval_batch_size 8 \
-      --max_new_tokens 256
+      --query_type "${qt}" \
+      --batch_size 8 \
+      --max_new_tokens 512
   done
 done
 
-echo "All merged-checkpoint text-simplification runs finished."
+echo "All merged-checkpoint zero/few-shot simplification runs finished."
