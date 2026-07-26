@@ -2,7 +2,7 @@
 #SBATCH -p astro
 #SBATCH --gres=gpu:nvidia_l40s:3
 #SBATCH --mem=100G
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=32
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
