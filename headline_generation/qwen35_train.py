@@ -687,6 +687,11 @@ if __name__ == '__main__':
 
     collator = CausalCollator(pad_token_id=tok.pad_token_id)
 
+    # NOTE: `group_by_length` / `length_column_name` were removed -- they are not
+    # accepted by TrainingArguments in transformers v5, which raises on unknown
+    # kwargs instead of ignoring them. Dropping them also keeps batch composition
+    # identical to the Gemma/Llama scripts, and they saved nothing at
+    # --train_batch_size 1 anyway.
     training_args = TrainingArguments(
         output_dir=os.path.join(OUTPUT_FOLDER, "checkpoints"),
         num_train_epochs=args.num_train_epochs,
@@ -697,18 +702,12 @@ if __name__ == '__main__':
         lr_scheduler_type="cosine",
         bf16=True,
         gradient_checkpointing=True,
-        # Long, highly variable article lengths: grouping similar lengths into a
-        # batch cuts padding waste substantially on this task.
-        group_by_length=True,
-        length_column_name="length",
         logging_steps=10,
         save_strategy="no",
         report_to="none",
         remove_unused_columns=False,
         seed=777,
     )
-    # group_by_length needs a length column when remove_unused_columns=False.
-    train_ds = train_ds.map(lambda ex: {"length": len(ex["input_ids"])})
 
     trainer = Trainer(
         model=model,
