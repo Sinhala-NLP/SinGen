@@ -138,6 +138,14 @@ class ElectraPretrainingModel(nn.Module):
 def build_dataset(args, tokenizer):
     raw = load_dataset(args.dataset_name, split="train")
 
+    # drop None / non-string / empty rows so the fast tokenizer doesn't choke
+    # (TextEncodeInput must be str). Mirrors the tokeniser-training cleaning.
+    raw = raw.filter(
+        lambda batch: [isinstance(t, str) and bool(t.strip())
+                       for t in batch[args.text_column]],
+        batched=True, num_proc=args.num_proc, desc="cleaning",
+    )
+
     def tokenize_fn(examples):
         return tokenizer(examples[args.text_column], return_special_tokens_mask=True)
 
