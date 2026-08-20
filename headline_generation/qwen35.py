@@ -10,10 +10,14 @@ import pandas as pd
 import torch
 from datasets import load_dataset
 from tqdm.auto import tqdm
-from transformers import AutoProcessor, set_seed
+from transformers import (AutoConfig, AutoProcessor, AutoTokenizer,
+                          AutoModelForCausalLM, set_seed)
 
-# Qwen3.5/3.6 are multimodal; their cards load them with AutoModelForMultimodalLM.
-# Fall back to AutoModelForImageTextToText on older transformers.
+# Multimodal Qwen (e.g. Qwen*-VL, Qwen3.5/3.6) load with AutoModelForMultimodalLM
+# via AutoProcessor. Text-only Qwen3 (Qwen3-0.6B..32B, Qwen3-30B-A3B) are plain
+# causal LMs loaded with AutoModelForCausalLM + AutoTokenizer. We pick the loader
+# per model by inspecting the config (see __main__); generate() below already
+# handles being handed either a processor or a bare tokenizer.
 try:
     from transformers import AutoModelForMultimodalLM as _AutoModel
 except ImportError:
@@ -358,8 +362,20 @@ if __name__ == '__main__':
         if torch.cuda.is_available():
             print(f"CUDA devices available: {torch.cuda.device_count()}")
 
-        processor = AutoProcessor.from_pretrained(model_id)
-        model = _AutoModel.from_pretrained(model_id, dtype="auto", device_map="auto")
+        # Route by config: multimodal checkpoints carry a vision_config; text-only
+        # Qwen3 does not. AutoProcessor/AutoModelForMultimodalLM would error on a
+        # text-only model, so we hand text models a tokenizer + causal LM instead.
+        cfg = AutoConfig.from_pretrained(model_id)
+        is_multimodal = getattr(cfg, "vision_config", None) is not None
+        print(f"Model type: {getattr(cfg, 'model_type', '?')}  "
+              f"({'multimodal' if is_multimodal else 'text-only'})")
+
+        if is_multimodal:
+            processor = AutoProcessor.from_pretrained(model_id)
+            model = _AutoModel.from_pretrained(model_id, dtype="auto", device_map="auto")
+        else:
+            processor = AutoTokenizer.from_pretrained(model_id)   # used as the "processor"
+            model = AutoModelForCausalLM.from_pretrained(model_id, dtype="auto", device_map="auto")
         model.eval()
 
         if hasattr(model, 'hf_device_map'):
