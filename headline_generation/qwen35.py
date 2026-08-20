@@ -1,6 +1,8 @@
 import argparse
 import os
 import re
+import json
+import glob
 import random
 from typing import List
 
@@ -18,7 +20,7 @@ except ImportError:
     from transformers import AutoModelForImageTextToText as _AutoModel
 
 # Sinhala-safe ROUGE (whitespace-tokenized). The stock rouge_score tokenizer
-# strips non-ASCII and would zero out every Sinhala score.
+# strips non-ASCII and would zero out every Sinhala score. Only used in --merge.
 from rouge_metric import score_corpus, ROUGE_TYPES
 
 set_seed(777)
@@ -169,9 +171,10 @@ def generate(model, processor, list_of_messages: List[list], batch_size, max_new
 
 
 # --------------------------------------------------------------------------- #
-# Pipeline
+# Prediction (one data shard)
 # --------------------------------------------------------------------------- #
-def predict(model, processor, model_id, batch_size, max_new_tokens, test_size, do_sample):
+def predict(model, processor, model_id, batch_size, max_new_tokens, test_size, do_sample,
+            num_shards, shard_id):
     print("Loading NSINA-Headlines dataset...")
     ds = load_dataset("sinhala-nlp/NSINA-Headlines")
     train_df = ds["train"].to_pandas()
@@ -181,14 +184,25 @@ def predict(model, processor, model_id, batch_size, max_new_tokens, test_size, d
     train_df = train_df[train_df['News Content'].notna() & train_df['Headline'].notna()].copy()
     print(f"After filtering - Train: {len(train_df)}, Test: {len(test_df)}")
 
-    df = test_df.head(min(test_size, len(test_df))).copy()
-    print(f"Using {len(df)} test samples")
-    df = analyze_and_trim_dataset(df)
+    # Build the FULL evaluation set first (same rows/order as the unsharded run),
+    # tag every row with a stable global index, THEN carve out this shard. The
+    # global index is what drives few-shot example selection, so each test
+    # instance gets the same examples regardless of how the set is sharded.
+    full = test_df.head(min(test_size, len(test_df))).copy().reset_index(drop=True)
+    full['global_idx'] = range(len(full))
+    full = analyze_and_trim_dataset(full)   # trim + stats over the full set (parity)
+
+    if num_shards > 1:
+        df = full.iloc[shard_id::num_shards].copy()   # strided -> balanced shards
+    else:
+        df = full
+    print(f"Shard {shard_id}/{num_shards}: {len(df)} of {len(full)} test samples")
 
     if QUERY_TYPE in ["few-shot", "few-shot-si"]:
         chat_messages = []
-        for idx, (_, row) in enumerate(tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts")):
-            fs = get_few_shot_examples_for_instance(train_df, instance_idx=idx, num_examples=3, seed=42)
+        for _, row in tqdm(df.iterrows(), total=len(df), desc="Preparing few-shot prompts"):
+            gidx = int(row['global_idx'])
+            fs = get_few_shot_examples_for_instance(train_df, instance_idx=gidx, num_examples=3, seed=42)
             chat_messages.append(format_chat(row, fs))
         df['chat'] = chat_messages
     else:
@@ -205,28 +219,95 @@ def predict(model, processor, model_id, batch_size, max_new_tokens, test_size, d
 
     n_miss = int((~df['marker_matched']).sum())
     n_empty = int((df['preds'].str.len() == 0).sum())
-    print(f"\nFormat misses (no 'Headline:' marker): {n_miss}/{len(df)}")
-    print(f"Empty predictions: {n_empty}/{len(df)}  <-- check for truncated/looping <think> if high")
+    print(f"\n[shard {shard_id}/{num_shards}] Format misses (no 'Headline:' marker): {n_miss}/{len(df)}")
+    print(f"[shard {shard_id}/{num_shards}] Empty predictions: {n_empty}/{len(df)}  "
+          f"<-- check for truncated/looping <think> if high")
 
+    shard_tag = f"shard{shard_id}_of{num_shards}"
+    pred_path = os.path.join(OUTPUT_FOLDER, f"predictions_{shard_tag}.csv")
+    df.to_csv(pred_path, index=False, encoding='utf-8')
+    print(f"Wrote {pred_path}")
+
+    # Sidecar meta so --merge can reproduce the summary header. One tiny JSON/shard.
+    meta = {
+        "model_id": model_id,
+        "query_type": QUERY_TYPE,
+        "num_shards": num_shards,
+        "shard_id": shard_id,
+        "n_rows": int(len(df)),
+        "max_new_tokens": int(max_new_tokens),
+        "batch_size": int(batch_size),
+        "decoding": "sampling(t=0.7,p=0.8,k=20)" if do_sample else "greedy",
+    }
+    with open(os.path.join(OUTPUT_FOLDER, f"meta_{shard_tag}.json"), 'w', encoding='utf-8') as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+
+    return df['preds'].tolist()
+
+
+# --------------------------------------------------------------------------- #
+# Merge (--merge): concatenate this (model, query_type)'s shards into one
+# canonical file set and score ROUGE over the full test set. No model is loaded.
+# --------------------------------------------------------------------------- #
+def _coerce_bool(series):
+    """CSV round-trips booleans as either bool or the strings 'True'/'False'."""
+    if series.dtype == bool:
+        return series
+    return (series.astype(str).str.strip().str.lower()
+            .map({'true': True, 'false': False}).fillna(False))
+
+
+def merge_shards(model_id, query_type, test_size):
+    shard_files = sorted(glob.glob(os.path.join(OUTPUT_FOLDER, "predictions_shard*_of*.csv")))
+    if not shard_files:
+        raise FileNotFoundError(f"No shard prediction files found in {OUTPUT_FOLDER}")
+
+    print(f"Merging {len(shard_files)} shard file(s):")
+    for f in shard_files:
+        print(f"  {f}")
+
+    df = pd.concat([pd.read_csv(f, encoding='utf-8') for f in shard_files], ignore_index=True)
+    df = (df.drop_duplicates(subset='global_idx', keep='last')     # safe against re-runs
+            .sort_values('global_idx')                             # restore original order
+            .reset_index(drop=True))
+
+    n = len(df)
+    if n != test_size:
+        print(f"WARNING: merged {n} rows but expected {test_size} — check for a failed/missing shard.")
+
+    # Canonical single files, matching the layout of the original script.
     df.to_csv(os.path.join(OUTPUT_FOLDER, "predictions.csv"), index=False, encoding='utf-8')
 
     print("Evaluating with ROUGE (Sinhala-safe, whitespace tokenized)...")
-    rouge = score_corpus(df['Headline'].tolist(), df['preds'].tolist())
+    refs = df['Headline'].astype(str).tolist()
+    preds = df['preds'].fillna("").astype(str).tolist()
+    rouge = score_corpus(refs, preds)
     df.to_csv(os.path.join(OUTPUT_FOLDER, "predictions_with_rouge.csv"), index=False, encoding='utf-8')
 
+    n_miss = int((~_coerce_bool(df['marker_matched'])).sum()) if 'marker_matched' in df else -1
+    n_empty = int((df['preds'].fillna("").astype(str).str.len() == 0).sum())
+
+    meta = {}
+    meta_files = sorted(glob.glob(os.path.join(OUTPUT_FOLDER, "meta_shard*_of*.json")))
+    if meta_files:
+        with open(meta_files[0], encoding='utf-8') as f:
+            meta = json.load(f)
+
     print("\n" + "=" * 60)
-    print("ROUGE F1 (x100)")
+    print("ROUGE F1 (x100)  [merged over all shards]")
     print("=" * 60)
     for t in ROUGE_TYPES:
         print(f"{t:8s} mean={rouge[t]['mean']:.4f}  median={rouge[t]['median']:.4f}  std={rouge[t]['std']:.4f}")
     print("=" * 60)
 
     with open(os.path.join(OUTPUT_FOLDER, "rouge_summary.txt"), 'w', encoding='utf-8') as f:
-        f.write(f"Model: {model_id}\nQuery type: {QUERY_TYPE}\nDataset: NSINA-Headlines\n")
-        f.write(f"Samples: {len(df)}\nFormat misses: {n_miss}/{len(df)}  Empty preds: {n_empty}/{len(df)}\n")
-        f.write(f"Max new tokens: {max_new_tokens}\nBatch size: {batch_size}\n")
-        f.write(f"Decoding: {'sampling(t=0.7,p=0.8,k=20)' if do_sample else 'greedy'}\n")
-        if QUERY_TYPE in ["few-shot", "few-shot-si"]:
+        f.write(f"Model: {model_id}\nQuery type: {query_type}\nDataset: NSINA-Headlines\n")
+        f.write(f"Samples: {n}\nFormat misses: {n_miss}/{n}  Empty preds: {n_empty}/{n}\n")
+        f.write(f"Max new tokens: {meta.get('max_new_tokens', 'NA')}\n")
+        f.write(f"Batch size: {meta.get('batch_size', 'NA')}\n")
+        f.write(f"Decoding: {meta.get('decoding', 'NA')}\n")
+        f.write(f"Merged from {len(shard_files)} data shard(s)\n")
+        if query_type in ["few-shot", "few-shot-si"]:
             f.write("Few-shot approach: Dynamic (unique examples per test instance from train set)\n")
         f.write("Metric: ROUGE F1 x100, whitespace-tokenized (Sinhala-safe)\n" + "=" * 60 + "\n")
         for t in ROUGE_TYPES:
@@ -234,7 +315,7 @@ def predict(model, processor, model_id, batch_size, max_new_tokens, test_size, d
             f.write(f"{t}:\n  Mean: {r['mean']:.4f}\n  Std: {r['std']:.4f}\n  Median: {r['median']:.4f}\n"
                     f"  Min: {r['min']:.4f}\n  Max: {r['max']:.4f}\n")
 
-    return df['preds'].tolist(), rouge
+    print(f"Wrote predictions.csv, predictions_with_rouge.csv, rouge_summary.txt to {OUTPUT_FOLDER}")
 
 
 if __name__ == '__main__':
@@ -248,31 +329,46 @@ if __name__ == '__main__':
     parser.add_argument('--do_sample', action='store_true',
                         help='Use Qwen-recommended sampling (t=0.7,p=0.8,k=20) instead of greedy. '
                              'Qwen warns greedy can cause repetition loops.')
+    parser.add_argument('--num_shards', type=int, default=1,
+                        help='Split the test set into this many data-parallel shards.')
+    parser.add_argument('--shard_id', type=int, default=0,
+                        help='Which shard (0-indexed) this process handles.')
+    parser.add_argument('--merge', action='store_true',
+                        help='Merge this (model, query_type)\'s shard predictions into one '
+                             'canonical file set and score ROUGE. No model is loaded.')
     args = parser.parse_args()
 
     QUERY_TYPE = args.query_type
     model_id = args.model_id
-    print(f"Model: {model_id}\nQuery type: {QUERY_TYPE}")
-    print(f"Batch size: {args.batch_size}\nMax new tokens: {args.max_new_tokens}")
-    print(f"Decoding: {'sampling' if args.do_sample else 'greedy'}")
-
     OUTPUT_FOLDER = os.path.join("outputs", "headline_generation", model_id.split('/')[-1], QUERY_TYPE)
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-    if torch.cuda.is_available():
-        print(f"CUDA devices available: {torch.cuda.device_count()}")
+    # -------- merge mode: no GPU / no model, just fold shards + score --------- #
+    if args.merge:
+        print(f"[merge] Model: {model_id}  Query type: {QUERY_TYPE}")
+        merge_shards(model_id, QUERY_TYPE, args.test_size)
+    else:
+        # -------- predict mode: one data shard --------------------------------- #
+        assert 0 <= args.shard_id < args.num_shards, "shard_id must be in [0, num_shards)"
+        print(f"Model: {model_id}\nQuery type: {QUERY_TYPE}")
+        print(f"Batch size: {args.batch_size}\nMax new tokens: {args.max_new_tokens}")
+        print(f"Decoding: {'sampling' if args.do_sample else 'greedy'}")
+        print(f"Shard: {args.shard_id}/{args.num_shards}")
 
-    processor = AutoProcessor.from_pretrained(model_id)
-    model = _AutoModel.from_pretrained(model_id, dtype="auto", device_map="auto")
-    model.eval()
+        if torch.cuda.is_available():
+            print(f"CUDA devices available: {torch.cuda.device_count()}")
 
-    if hasattr(model, 'hf_device_map'):
-        dist = {}
-        for _, dev in model.hf_device_map.items():
-            dist[dev] = dist.get(dev, 0) + 1
-        print("Device map:", dist)
+        processor = AutoProcessor.from_pretrained(model_id)
+        model = _AutoModel.from_pretrained(model_id, dtype="auto", device_map="auto")
+        model.eval()
 
-    log_gpu_memory()
-    predict(model, processor, model_id, args.batch_size, args.max_new_tokens,
-            args.test_size, args.do_sample)
-    log_gpu_memory()
+        if hasattr(model, 'hf_device_map'):
+            dist = {}
+            for _, dev in model.hf_device_map.items():
+                dist[dev] = dist.get(dev, 0) + 1
+            print("Device map:", dist)
+
+        log_gpu_memory()
+        predict(model, processor, model_id, args.batch_size, args.max_new_tokens,
+                args.test_size, args.do_sample, args.num_shards, args.shard_id)
+        log_gpu_memory()
