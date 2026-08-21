@@ -26,8 +26,13 @@ def parse_args():
 
 
 def batch_iterator(ds, text_column, batch_size):
+    # drop None / non-string / empty rows; the Rust trainer errors on a null
+    # ('NoneType' object cannot be converted to 'PyString').
     for i in range(0, len(ds), batch_size):
-        yield ds[i:i + batch_size][text_column]
+        texts = ds[i:i + batch_size][text_column]
+        texts = [t for t in texts if isinstance(t, str) and t.strip()]
+        if texts:
+            yield texts
 
 
 def train_wordpiece(ds, args):
