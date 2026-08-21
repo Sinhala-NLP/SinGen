@@ -135,6 +135,25 @@ class ElectraPretrainingModel(nn.Module):
                 "disc_loss": disc_out.loss.detach()}
 
 
+class ElectraTrainer(Trainer):
+    """The tied generator/discriminator embeddings are shared tensors, which
+    safetensors refuses to serialize. Newer transformers (v5) dropped the
+    save_safetensors flag, so force plain torch.save for the model weights here.
+    The optimizer, scheduler, RNG and trainer_state are still written by the
+    base Trainer, and resume finds pytorch_model.bin."""
+
+    def _save(self, output_dir=None, state_dict=None, **kwargs):
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        if state_dict is None:
+            state_dict = self.model.state_dict()
+        torch.save(state_dict, os.path.join(output_dir, "pytorch_model.bin"))
+        tok = getattr(self, "processing_class", None) or getattr(self, "tokenizer", None)
+        if tok is not None:
+            tok.save_pretrained(output_dir)
+        torch.save(self.args, os.path.join(output_dir, "training_args.bin"))
+
+
 def build_dataset(args, tokenizer):
     raw = load_dataset(args.dataset_name, split="train")
 
@@ -205,14 +224,11 @@ def main():
         save_steps=args.save_steps, save_total_limit=args.save_total_limit,
         dataloader_num_workers=args.dataloader_num_workers,
         remove_unused_columns=False, seed=args.seed, report_to="none",
-        # tied gen/disc embeddings share memory; safetensors refuses shared
-        # tensors, so checkpoint with torch.save instead.
-        save_safetensors=False,
     )
 
-    trainer = Trainer(model=model, args=training_args,
-                      train_dataset=lm_dataset, data_collator=collator,
-                      callbacks=[RequeueSaveCallback()])
+    trainer = ElectraTrainer(model=model, args=training_args,
+                             train_dataset=lm_dataset, data_collator=collator,
+                             callbacks=[RequeueSaveCallback()])
 
     last_checkpoint = None
     if os.path.isdir(args.output_dir):
