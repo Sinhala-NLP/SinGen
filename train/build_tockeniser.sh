@@ -1,66 +1,53 @@
 #!/bin/bash
-#SBATCH -p astro
-#SBATCH --gres=gpu:nvidia_l40s:1
+#SBATCH -p serial                     # a CPU partition -- set to your cluster's CPU queue
+#SBATCH --job-name=sinhala-tokenizer
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=64G
-#SBATCH --time=24:00:00
-#SBATCH --job-name=build_si_tok
-#SBATCH --output=build_si_tok_%j.out
-
-# --------------------------------------------------------------------------- #
-# CPU-only prerequisite: build the Sinhala-extended gemma-4 tokenizer.
-# Run this FIRST, then read the fertility number in the log to decide whether
-# the extension is worth it. Once it finishes, run_cpt_gemma4_extended.sh will
-# find the tokenizer and skip its own build step.
-#
-# No GPU needed -- SentencePiece training is CPU (multi-threaded, hence the 16
-# cores). Confirm 'serial' is your cluster's CPU queue and allows this many
-# cpus-per-task; if it's capped, switch -p to 'parallel'.
-# --------------------------------------------------------------------------- #
+#SBATCH --mem=100G
+#SBATCH --time=12:00:00
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
+#SBATCH -o logs/tokenizer-%j.out
+#SBATCH -e logs/tokenizer-%j.err
 
 source /etc/profile
 module add anaconda3/2023.09
-module add cuda/12.0
-
 source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 
-export HF_HOME=/scratch/hpc/37/ranasint/hf
-export HF_DATASETS_CACHE=/scratch/hpc/37/ranasint/hf/datasets
-export PIP_CACHE_DIR=/scratch/hpc/37/ranasint/pip
-export TMPDIR=/scratch/hpc/37/ranasint/tmp
-mkdir -p "$TMPDIR"
+# set -u only after conda activation (activation scripts reference unbound vars)
+set -uo pipefail
 
-# gated model: the tokenizer download needs the licence-accepted token too
+export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
 export HF_TOKEN=
+export HF_HUB_DISABLE_XET=1            # plain resumable downloader (avoids the Xet writer crash)
+export HF_HUB_DOWNLOAD_TIMEOUT=60
+export PYTHONIOENCODING=utf-8
 
-export HF_DATASETS_STREAMING=1
-pip install sentencepiece
+mkdir -p logs
 
-TOKENIZER_DIR=/scratch/hpc/37/ranasint/gemma4_si_tokenizer
+# Retrain the WordPiece tokenisers with the strip-accents fix. RoBERTa uses
+# byte-level BPE and was never affected, so it's omitted; add it to the list if
+# you want a fresh one anyway.
+for model_type in bert electra; do
+    tok_dir=/scratch/hpc/37/ranasint/sinhala_lms/tok_${model_type}
 
-# needs sentencepiece in the env: pip install sentencepiece --break-system-packages
-python -c "import sentencepiece" 2>/dev/null || {
-    echo "ERROR: sentencepiece not installed in this env."; exit 1; }
+    echo "[$(date)] TRAIN $model_type -> $tok_dir"
+    rm -rf "$tok_dir"                 # force a clean rebuild over the buggy vocab
 
-if [ -f "$TOKENIZER_DIR/new_tokens.txt" ]; then
-    echo "Tokenizer already exists at $TOKENIZER_DIR -- nothing to do."
-    exit 0
-fi
+    if python train_tokenizer.py --model_type "$model_type" --output_dir "$tok_dir"; then
+        echo "[$(date)] DONE  $model_type"
+    else
+        echo "[$(date)] FAIL  $model_type" >&2
+    fi
+done
 
-# build into a temp dir + atomic mv so an interrupted build can't leave a
-# half-written dir that later jobs mistake for a finished tokenizer.
-rm -rf "${TOKENIZER_DIR}.tmp"
-python build_extended_tokenizer.py \
-    --model google/gemma-4-31B-it \
-    --dataset sinhala-nlp/sinhala-7m-corpus \
-    --out "${TOKENIZER_DIR}.tmp" \
-    --train_sample 300000 \
-    --sp_vocab 32000 \
-    --new_tokens 15000 || { echo "tokenizer build failed"; exit 1; }
-mv "${TOKENIZER_DIR}.tmp" "$TOKENIZER_DIR"
+# Sanity-check the fix: hal kirima must survive and vowels stay composed.
+echo "[$(date)] verifying tok_bert round-trip:"
+python -c "
+from transformers import AutoTokenizer
+t = AutoTokenizer.from_pretrained('/scratch/hpc/37/ranasint/sinhala_lms/tok_bert')
+s = 'අද ඉතා හොඳ දවසක්.'
+print(' tokens:', t.tokenize(s))
+print(' decode:', t.decode(t(s, add_special_tokens=False)['input_ids']))
+"
 
-echo "============================================================"
-echo "Tokenizer built at $TOKENIZER_DIR"
-echo ">>> Check the 'Fertility reduction' line above BEFORE submitting"
-echo "    the GPU run. If it's small (<10%), reconsider the extension."
-echo "============================================================"
+echo "[$(date)] Tokeniser job finished."
