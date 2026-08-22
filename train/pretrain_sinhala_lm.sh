@@ -22,10 +22,31 @@ export HF_HUB_DOWNLOAD_TIMEOUT=60
 # per submission without editing the file, e.g.
 #   sbatch --export=ALL,MODEL_TYPE=roberta pretrain_sinhala_lm.sh
 #   sbatch --export=ALL,MODEL_TYPE=electra pretrain_sinhala_lm.sh
+#   sbatch --export=ALL,MODEL_TYPE=bert,MODEL_SIZE=large pretrain_sinhala_lm.sh
 MODEL_TYPE="${MODEL_TYPE:-bert}"
+MODEL_SIZE="${MODEL_SIZE:-base}"     # base or large
 
+# The tokeniser (64k vocab) is identical across sizes, so it is keyed on type
+# only; outputs are keyed on type + size so base and large never collide.
 TOK_DIR=/scratch/hpc/37/ranasint/sinhala_lms/tok_${MODEL_TYPE}
-OUT_DIR=/scratch/hpc/37/ranasint/sinhala_lms/${MODEL_TYPE}
+OUT_DIR=/scratch/hpc/37/ranasint/sinhala_lms/${MODEL_TYPE}_${MODEL_SIZE}
+
+# per-device batch / grad-accum for an L40 (48 GB), seq 512, bf16, gradient
+# checkpointing on; effective batch held at 256 across all configs.
+case "${MODEL_TYPE}_${MODEL_SIZE}" in
+    electra_base)  bs=32; ga=8  ;;
+    electra_large) bs=8;  ga=32 ;;
+    *_base)        bs=64; ga=4  ;;   # bert / roberta base
+    *_large)       bs=16; ga=16 ;;   # bert / roberta large
+esac
+
+# large ELECTRA needs its discriminator dims passed explicitly (the .py defaults
+# are base); base ELECTRA and all MLM sizes are handled by their own flags.
+electra_size_args=()
+if [ "$MODEL_SIZE" = "large" ]; then
+    electra_size_args=(--num_hidden_layers 24 --disc_hidden_size 1024 \
+                       --disc_num_heads 16 --disc_intermediate_size 4096)
+fi
 
 # --- self-requeue on wall-time -------------------------------------------
 # SLURM sends USR1 180s before the time limit (see --signal above). We then
@@ -39,8 +60,8 @@ _requeued=0
 requeue() {
     if [ "$_requeued" -eq 0 ]; then
         _requeued=1
-        echo "=== wall-time approaching: resubmitting $MODEL_TYPE ==="
-        sbatch --export=ALL,MODEL_TYPE="$MODEL_TYPE" "$SELF"
+        echo "=== wall-time approaching: resubmitting ${MODEL_TYPE}_${MODEL_SIZE} ==="
+        sbatch --export=ALL,MODEL_TYPE="$MODEL_TYPE",MODEL_SIZE="$MODEL_SIZE" "$SELF"
     fi
     [ -n "$TRAIN_PID" ] && kill -USR1 "$TRAIN_PID" 2>/dev/null
 }
@@ -55,18 +76,32 @@ if [ ! -f "$TOK_DIR/tokenizer.json" ]; then
     python train_tokenizer.py --model_type "$MODEL_TYPE" --output_dir "$TOK_DIR"
 fi
 
+# Fail fast: if the tokeniser step didn't produce a tokeniser, stop here rather
+# than fall through to pretraining, which would fail obscurely trying to load an
+# empty dir as a Hub repo id.
+if [ ! -f "$TOK_DIR/tokenizer.json" ]; then
+    echo "ERROR: no tokenizer.json in $TOK_DIR -- tokeniser step failed; aborting." >&2
+    exit 1
+fi
+
 # Pretrain. Both trainers resume from the last checkpoint in OUT_DIR if present.
-echo "=== pretraining $MODEL_TYPE -> $OUT_DIR ==="
+echo "=== pretraining ${MODEL_TYPE}_${MODEL_SIZE} (bs=$bs ga=$ga) -> $OUT_DIR ==="
 if [ "$MODEL_TYPE" = "electra" ]; then
     python pretrain_electra.py \
         --tokenizer_dir "$TOK_DIR" \
         --output_dir "$OUT_DIR" \
-        --num_proc "$SLURM_CPUS_PER_TASK" &
+        --per_device_train_batch_size "$bs" \
+        --gradient_accumulation_steps "$ga" \
+        --num_proc "$SLURM_CPUS_PER_TASK" \
+        "${electra_size_args[@]}" &
 else
     python pretrain_mlm.py \
         --model_type "$MODEL_TYPE" \
+        --model_size "$MODEL_SIZE" \
         --tokenizer_dir "$TOK_DIR" \
         --output_dir "$OUT_DIR" \
+        --per_device_train_batch_size "$bs" \
+        --gradient_accumulation_steps "$ga" \
         --num_proc "$SLURM_CPUS_PER_TASK" &
 fi
 TRAIN_PID=$!

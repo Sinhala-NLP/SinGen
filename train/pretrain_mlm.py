@@ -23,6 +23,7 @@ from transformers import (
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_type", choices=["bert", "roberta"], required=True)
+    p.add_argument("--model_size", choices=["base", "large"], default="base")
     p.add_argument("--tokenizer_dir", required=True)
     p.add_argument("--output_dir", required=True)
     p.add_argument("--dataset_name", default="sinhala-nlp/sinhala-7m-corpus")
@@ -69,23 +70,27 @@ class RequeueSaveCallback(TrainerCallback):
         return control
 
 
-def build_model(model_type, tokenizer, max_seq_length):
+SIZES = {
+    "base":  dict(hidden_size=768,  num_hidden_layers=12, num_attention_heads=12, intermediate_size=3072),
+    "large": dict(hidden_size=1024, num_hidden_layers=24, num_attention_heads=16, intermediate_size=4096),
+}
+
+
+def build_model(model_type, model_size, tokenizer, max_seq_length):
+    dims = SIZES[model_size]
     vocab_size = len(tokenizer)
     if model_type == "bert":
         config = BertConfig(
-            vocab_size=vocab_size, hidden_size=768, num_hidden_layers=12,
-            num_attention_heads=12, intermediate_size=3072,
-            max_position_embeddings=max_seq_length, type_vocab_size=2,
-            pad_token_id=tokenizer.pad_token_id,
+            vocab_size=vocab_size, max_position_embeddings=max_seq_length,
+            type_vocab_size=2, pad_token_id=tokenizer.pad_token_id, **dims,
         )
         return BertForMaskedLM(config)
     # RoBERTa position ids are offset by padding_idx+1, so +2 slots are needed.
     config = RobertaConfig(
-        vocab_size=vocab_size, hidden_size=768, num_hidden_layers=12,
-        num_attention_heads=12, intermediate_size=3072,
-        max_position_embeddings=max_seq_length + 2, type_vocab_size=1,
-        pad_token_id=tokenizer.pad_token_id,
+        vocab_size=vocab_size, max_position_embeddings=max_seq_length + 2,
+        type_vocab_size=1, pad_token_id=tokenizer.pad_token_id,
         bos_token_id=tokenizer.bos_token_id, eos_token_id=tokenizer.eos_token_id,
+        **dims,
     )
     return RobertaForMaskedLM(config)
 
@@ -125,7 +130,7 @@ def main():
     args = parse_args()
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_dir)
 
-    model = build_model(args.model_type, tokenizer, args.max_seq_length)
+    model = build_model(args.model_type, args.model_size, tokenizer, args.max_seq_length)
     if hasattr(model.config, "use_cache"):
         model.config.use_cache = False
 
