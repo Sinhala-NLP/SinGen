@@ -40,7 +40,7 @@ def parse_args():
     p.add_argument("--adam_beta2", type=float, default=0.999)
     p.add_argument("--num_train_epochs", type=float, default=1.0)
     p.add_argument("--max_steps", type=int, default=-1)
-    p.add_argument("--warmup_steps", type=int, default=10000)
+    p.add_argument("--warmup_ratio", type=float, default=0.06)
     p.add_argument("--mlm_probability", type=float, default=0.15)
     p.add_argument("--num_proc", type=int, default=8)
     p.add_argument("--save_steps", type=int, default=10000)
@@ -148,7 +148,7 @@ def main():
         learning_rate=args.learning_rate, weight_decay=args.weight_decay,
         adam_beta2=args.adam_beta2,
         num_train_epochs=args.num_train_epochs, max_steps=args.max_steps,
-        warmup_steps=args.warmup_steps, lr_scheduler_type="linear",
+        warmup_ratio=args.warmup_ratio, lr_scheduler_type="linear",
         bf16=True, logging_steps=args.logging_steps,
         save_steps=args.save_steps, save_total_limit=args.save_total_limit,
         dataloader_num_workers=args.dataloader_num_workers,

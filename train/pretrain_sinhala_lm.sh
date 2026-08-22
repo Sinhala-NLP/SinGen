@@ -40,6 +40,14 @@ case "${MODEL_TYPE}_${MODEL_SIZE}" in
     *_large)       bs=16; ga=16 ;;   # bert / roberta large
 esac
 
+# WordPiece (bert/electra) packs ~3x fewer tokens per epoch than byte-level BPE
+# (roberta), so give them 3 epochs to see a comparable token budget. Warmup is a
+# ratio of total steps (set in the .py, default 0.06), so it scales with the run.
+case "$MODEL_TYPE" in
+    roberta) epochs=1 ;;
+    *)       epochs=3 ;;
+esac
+
 # large ELECTRA needs its discriminator dims passed explicitly (the .py defaults
 # are base); base ELECTRA and all MLM sizes are handled by their own flags.
 electra_size_args=()
@@ -85,11 +93,12 @@ if [ ! -f "$TOK_DIR/tokenizer.json" ]; then
 fi
 
 # Pretrain. Both trainers resume from the last checkpoint in OUT_DIR if present.
-echo "=== pretraining ${MODEL_TYPE}_${MODEL_SIZE} (bs=$bs ga=$ga) -> $OUT_DIR ==="
+echo "=== pretraining ${MODEL_TYPE}_${MODEL_SIZE} (bs=$bs ga=$ga ep=$epochs) -> $OUT_DIR ==="
 if [ "$MODEL_TYPE" = "electra" ]; then
     python pretrain_electra.py \
         --tokenizer_dir "$TOK_DIR" \
         --output_dir "$OUT_DIR" \
+        --num_train_epochs "$epochs" \
         --per_device_train_batch_size "$bs" \
         --gradient_accumulation_steps "$ga" \
         --num_proc "$SLURM_CPUS_PER_TASK" \
@@ -100,6 +109,7 @@ else
         --model_size "$MODEL_SIZE" \
         --tokenizer_dir "$TOK_DIR" \
         --output_dir "$OUT_DIR" \
+        --num_train_epochs "$epochs" \
         --per_device_train_batch_size "$bs" \
         --gradient_accumulation_steps "$ga" \
         --num_proc "$SLURM_CPUS_PER_TASK" &
