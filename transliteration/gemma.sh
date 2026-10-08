@@ -14,7 +14,6 @@ module add cuda/12.0
 
 source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
-export HF_HUB_DISABLE_XET=1
 export HF_TOKEN=
 
 # 16 array tasks = 4 models x 4 query types (task id -> model = id / 4, query type = id % 4)
