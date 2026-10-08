@@ -3,7 +3,7 @@
 #SBATCH --gres=gpu:nvidia_h200_nvl:1
 #SBATCH --mem=100G
 #SBATCH --time=12:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --array=0-15
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
