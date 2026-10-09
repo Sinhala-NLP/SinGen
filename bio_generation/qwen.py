@@ -20,7 +20,7 @@ except ImportError:
 
 # Sinhala-safe ROUGE (whitespace-tokenized). Same module as the Gemma script,
 # so BioGen ROUGE-L is comparable across model families.
-from sinhala_rouge import score_corpus, ROUGE_TYPES
+from rouge_metric import score_corpus, ROUGE_TYPES
 
 set_seed(777)
 
