@@ -13,7 +13,6 @@ module add cuda/12.0
 
 source activate /storage/hpc/37/ranasint/conda_envs/llm_exp
 export HF_HOME=/scratch/hpc/37/ranasint/hf_cache
-export HF_HUB_DISABLE_XET=1
 export HF_TOKEN=
 
 # 16 array tasks = 4 models x 4 query types (model = id / 4, query type = id % 4).
@@ -37,7 +36,7 @@ if [ -f "outputs/biography_generation/${model#*/}/$qt/rouge_summary.txt" ]; then
 fi
 
 echo "=== $model | $qt | batch_size=$bs ==="
-python -m llama_biography_generation \
+python -m llama \
     --model_id "$model" \
     --query_type "$qt" \
     --batch_size "$bs" \
