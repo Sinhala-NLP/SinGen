@@ -403,7 +403,7 @@ def evaluate(model, chat_proc, tok, args, test_df, output_folder, train_size):
     refs = df[t["tgt_col"]].astype(str).tolist()
     hyps = df["preds"].astype(str).tolist()
     try:
-        from rouge_metric import score_corpus, ROUGE_TYPES
+        from sinhala_rouge import score_corpus, ROUGE_TYPES
     except ImportError:
         from rouge_metric import score_corpus, ROUGE_TYPES
     results, metric_names, keys = score_corpus(refs, hyps), ROUGE_TYPES, ["mean", "median", "std", "min", "max"]
