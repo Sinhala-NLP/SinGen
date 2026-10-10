@@ -6,8 +6,7 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --array=0-13
 #SBATCH --requeue
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=t.ranasinghe@lancaster.ac.uk
+
 
 # Usage:  sbatch llama_finetune_translit.sh
 # One array task = one (model, fine-tune language): 7 models x 2 languages = 14.
