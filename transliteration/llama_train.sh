@@ -40,7 +40,7 @@ if [ -f "$out" ]; then
 fi
 
 echo "=== $model | $lang ==="
-python -m llama_finetune_translit \
+python -m llama_train \
     --model_id "$model" \
     --prompt_lang "$lang" \
     --eval_batch_size 32
